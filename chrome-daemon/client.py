@@ -98,6 +98,13 @@ class AIHubClient:
         }, timeout=700)
         return Path(result["image_path"])
 
+    def send_to_conversation(self, watcher_id: str, text: str) -> dict:
+        return self._post(f"/conversations/{watcher_id}/send", {"text": text})
+
+    def get_last_message(self, watcher_id: str) -> dict | None:
+        result = self._get(f"/conversations/{watcher_id}/last-message")
+        return result.get("message")
+
     def register_from_config(self, config_path: Path | None = None) -> list[dict]:
         """Reads .ai-hub.yml and registers all conversations."""
         if config_path is None:

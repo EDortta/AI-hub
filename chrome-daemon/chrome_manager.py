@@ -200,7 +200,6 @@ class ChromeManager:
 
     def get_or_open_page(self, url: str):
         """Returns existing page for url or opens a new one."""
-        # Find by URL prefix (conversation URLs can have query params)
         base = url.split("?")[0]
         for page in self.context.pages:
             try:
@@ -215,3 +214,39 @@ class ChromeManager:
         except Exception:
             pass
         return page
+
+    def send_message(self, url: str, text: str) -> bool:
+        """Navigate to url, type text into the ChatGPT input and send it."""
+        page = self.get_or_open_page(url)
+        try:
+            selectors = ("textarea", "div[contenteditable='true']", "[role='textbox']")
+            for sel in selectors:
+                loc = page.locator(sel).last
+                try:
+                    loc.wait_for(state="visible", timeout=5_000)
+                    loc.click()
+                    page.keyboard.type(text)
+                    break
+                except Exception:
+                    continue
+            else:
+                return False
+
+            send_sels = (
+                "button[data-testid='send-button']",
+                "button[aria-label*='Send']",
+                "button[aria-label*='send']",
+            )
+            for ss in send_sels:
+                try:
+                    page.locator(ss).wait_for(state="visible", timeout=3_000)
+                    page.locator(ss).click()
+                    return True
+                except Exception:
+                    pass
+            page.keyboard.press("Enter")
+            return True
+        except Exception as e:
+            import logging
+            logging.getLogger("ai-hub.chrome").warning("send_message error: %s", e)
+            return False

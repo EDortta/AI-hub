@@ -146,6 +146,52 @@ async def list_conversations():
     return [w.to_dict() for w in registry.all()]
 
 
+class SendRequest(BaseModel):
+    text: str
+
+
+@app.post("/conversations/{watcher_id}/send")
+async def send_message(watcher_id: str, req: SendRequest):
+    """Post a message to the ChatGPT conversation owned by this watcher."""
+    w = registry.get(watcher_id)
+    if not w:
+        raise HTTPException(status_code=404, detail="Watcher not found")
+
+    loop = asyncio.get_event_loop()
+
+    def _sync_send():
+        with ChromeManager(cdp_url=CDP_URL) as mgr:
+            return mgr.send_message(w.url, req.text)
+
+    ok = await loop.run_in_executor(None, _sync_send)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to send message to ChatGPT page")
+    return {"ok": True}
+
+
+@app.get("/conversations/{watcher_id}/last-message")
+async def get_last_message(watcher_id: str):
+    """Return the last assistant message in the watcher's conversation."""
+    from watchers import _expand_and_extract
+
+    w = registry.get(watcher_id)
+    if not w:
+        raise HTTPException(status_code=404, detail="Watcher not found")
+
+    loop = asyncio.get_event_loop()
+
+    def _sync_peek():
+        with ChromeManager(cdp_url=CDP_URL) as mgr:
+            page = mgr.get_or_open_page(w.url)
+            page.keyboard.press("Home")
+            page.wait_for_timeout(2_000)
+            return _expand_and_extract(page)
+
+    messages = await loop.run_in_executor(None, _sync_peek)
+    last_assistant = next((m for m in reversed(messages) if m.get("role") == "assistant"), None)
+    return {"message": last_assistant}
+
+
 # ---------------------------------------------------------------------------
 # Image generation
 # ---------------------------------------------------------------------------
