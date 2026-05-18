@@ -88,10 +88,12 @@ def _attach_reference_image(page, reference_path: Path) -> None:
                 continue
 
         if not submenu_clicked:
-            # No sub-menu found — try direct file chooser (older ChatGPT layouts)
+            # No sub-menu found — re-click the attach button with the file chooser
+            # interceptor already active. Some ChatGPT layouts skip the sub-menu
+            # and trigger the chooser directly from the button.
             try:
-                with page.expect_file_chooser(timeout=5_000) as fc_info:
-                    pass  # chooser was already triggered by the attach button click
+                with page.expect_file_chooser(timeout=8_000) as fc_info:
+                    _click_first_available(page, attach_trigger_selectors, timeout_ms=5_000)
                 fc_info.value.set_files(str(reference_path))
             except Exception as exc:
                 log.warning("Reference image attach failed (direct): %s", exc)

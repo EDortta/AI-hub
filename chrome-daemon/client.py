@@ -90,6 +90,7 @@ class AIHubClient:
         orientation: str = "portrait",
         output_dir: str = "",
         greeting: str = "Hey, ",
+        reference_image_path: "Path | None" = None,
     ) -> Path:
         result = self._post("/image/generate", {
             "gpt_url": gpt_url,
@@ -97,8 +98,33 @@ class AIHubClient:
             "orientation": orientation,
             "output_dir": output_dir,
             "greeting": greeting,
+            "reference_image_path": str(reference_image_path) if reference_image_path else "",
         }, timeout=700)
         return Path(result["image_path"])
+
+    def publish_to_x(
+        self,
+        image_path: "Path",
+        caption: str,
+        x_compose_url: str = "https://x.com/compose/post",
+    ) -> None:
+        self._post("/social/publish/x", {
+            "image_path": str(image_path),
+            "caption": caption,
+            "url": x_compose_url,
+        }, timeout=120)
+
+    def publish_to_linkedin(
+        self,
+        image_path: "Path",
+        caption: str,
+        linkedin_url: str = "https://www.linkedin.com/feed/",
+    ) -> None:
+        self._post("/social/publish/linkedin", {
+            "image_path": str(image_path),
+            "caption": caption,
+            "url": linkedin_url,
+        }, timeout=120)
 
     def send_to_conversation(self, watcher_id: str, text: str) -> dict:
         return self._post(f"/conversations/{watcher_id}/send", {"text": text})

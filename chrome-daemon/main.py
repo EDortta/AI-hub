@@ -204,6 +204,7 @@ class ImageRequest(BaseModel):
     orientation: str = "portrait"
     output_dir: str = ""
     greeting: str = "Hey, "
+    reference_image_path: str = ""
 
 
 @app.post("/image/generate")
@@ -211,6 +212,7 @@ async def generate_image(req: ImageRequest):
     from image_generator import DEFAULT_OUTPUT_DIR, generate_image as _gen
 
     output_dir = Path(req.output_dir).expanduser() if req.output_dir else DEFAULT_OUTPUT_DIR
+    ref_path = Path(req.reference_image_path).expanduser() if req.reference_image_path else None
 
     loop = asyncio.get_event_loop()
     try:
@@ -223,12 +225,63 @@ async def generate_image(req: ImageRequest):
                 output_dir=output_dir,
                 greeting=req.greeting,
                 cdp_url=CDP_URL,
+                reference_image_path=ref_path,
             ),
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
     return {"ok": True, "image_path": str(image_path)}
+
+
+# ---------------------------------------------------------------------------
+# Social publishing
+# ---------------------------------------------------------------------------
+
+class PublishSocialRequest(BaseModel):
+    image_path: str
+    caption: str
+    url: str
+
+
+@app.post("/social/publish/x")
+async def publish_to_x(req: PublishSocialRequest):
+    from social_publisher import publish_to_x as _pub
+
+    image_path = Path(req.image_path).expanduser()
+    if not image_path.exists():
+        raise HTTPException(status_code=400, detail=f"Image not found: {image_path}")
+
+    loop = asyncio.get_event_loop()
+    try:
+        await loop.run_in_executor(
+            None,
+            lambda: _pub(image_path, req.caption, req.url, CDP_URL),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {"ok": True}
+
+
+@app.post("/social/publish/linkedin")
+async def publish_to_linkedin(req: PublishSocialRequest):
+    from social_publisher import publish_to_linkedin as _pub
+
+    image_path = Path(req.image_path).expanduser()
+    if not image_path.exists():
+        raise HTTPException(status_code=400, detail=f"Image not found: {image_path}")
+
+    loop = asyncio.get_event_loop()
+    try:
+        await loop.run_in_executor(
+            None,
+            lambda: _pub(image_path, req.caption, req.url, CDP_URL),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
