@@ -34,7 +34,79 @@ def _estuary_srcs(page) -> set[str]:
     return result
 
 
-def _fill_and_send(page, full_prompt: str) -> None:
+def _click_first_available(page, selectors: tuple, timeout_ms: int = 10_000) -> bool:
+    for sel in selectors:
+        try:
+            loc = page.locator(sel).last
+            loc.wait_for(state="visible", timeout=timeout_ms)
+            loc.click()
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _attach_reference_image(page, reference_path: Path) -> None:
+    """Upload a reference image to the ChatGPT input before typing the prompt.
+
+    ChatGPT's attach button opens a sub-menu ("Upload from computer" / "From computer").
+    We click the menu trigger, wait for the sub-menu item, then intercept the file chooser.
+    """
+    attach_trigger_selectors = (
+        "button[aria-label='Add files and more']",
+        "button[aria-label*='attach' i]",
+        "button[aria-label*='file' i]",
+    )
+    upload_item_selectors = (
+        "[role='menuitem']:has-text('computer')",
+        "[role='option']:has-text('computer')",
+        "li:has-text('Upload from computer')",
+        "li:has-text('From computer')",
+        "button:has-text('Upload from computer')",
+        "button:has-text('From computer')",
+    )
+    try:
+        # Step 1: open the attach menu
+        if not _click_first_available(page, attach_trigger_selectors, timeout_ms=5_000):
+            log.warning("Reference image attach button not found — skipping.")
+            return
+        page.wait_for_timeout(500)
+
+        # Step 2: the menu may open a sub-menu — click "Upload from computer" if present,
+        # otherwise assume a file chooser was triggered directly.
+        submenu_clicked = False
+        for sel in upload_item_selectors:
+            try:
+                item = page.locator(sel).first
+                item.wait_for(state="visible", timeout=3_000)
+                with page.expect_file_chooser(timeout=6_000) as fc_info:
+                    item.click()
+                fc_info.value.set_files(str(reference_path))
+                submenu_clicked = True
+                break
+            except Exception:
+                continue
+
+        if not submenu_clicked:
+            # No sub-menu found — try direct file chooser (older ChatGPT layouts)
+            try:
+                with page.expect_file_chooser(timeout=5_000) as fc_info:
+                    pass  # chooser was already triggered by the attach button click
+                fc_info.value.set_files(str(reference_path))
+            except Exception as exc:
+                log.warning("Reference image attach failed (direct): %s", exc)
+                return
+
+        page.wait_for_timeout(3_000)
+        log.info("Reference image attached: %s", reference_path.name)
+    except Exception as exc:
+        log.warning("Reference image attach failed: %s", exc)
+
+
+def _fill_and_send(page, full_prompt: str, reference_image_path: Path | None = None) -> None:
+    if reference_image_path and reference_image_path.exists():
+        _attach_reference_image(page, reference_image_path)
+
     selectors = ("textarea", "div[contenteditable='true']", "[role='textbox']")
     for sel in selectors:
         loc = page.locator(sel).last
@@ -165,15 +237,18 @@ def generate_image(
     output_dir: Path = DEFAULT_OUTPUT_DIR,
     greeting: str = "Hey, ",
     cdp_url: str = "http://127.0.0.1:9222",
+    reference_image_path: Path | None = None,
 ) -> Path:
     """Sends prompt to a ChatGPT image GPT and saves the generated image.
 
     Uses the shared Chrome instance — must be already running.
+    If reference_image_path is provided, the file is attached before the prompt.
     """
     from chrome_manager import ChromeManager
 
     full_prompt = f"{greeting}{prompt} — orientação {orientation}"
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    output_dir = Path(output_dir)
     output_path = output_dir / f"ai-hub-{stamp}.png"
 
     log.info("Generating image: %.80s", full_prompt)
@@ -184,7 +259,7 @@ def generate_image(
         before_srcs = _estuary_srcs(page)
         log.info("Existing images in page: %d", len(before_srcs))
 
-        _fill_and_send(page, full_prompt)
+        _fill_and_send(page, full_prompt, reference_image_path=reference_image_path)
         _wait_for_done(page)
 
         new_src = _wait_for_new_image(page, before_srcs)
