@@ -78,11 +78,10 @@ def remove_singleton_files(profile_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def ensure_xvfb(display: str = XVFB_DISPLAY) -> str:
-    """Garante display virtual Xvfb. Retorna display a usar."""
+    """Garante display virtual Xvfb. Retorna display a usar, ou '' para headless nativo."""
     if not shutil.which("Xvfb"):
-        fallback = os.environ.get("DISPLAY", ":0")
-        print(f"[chrome] Xvfb não encontrado — usando {fallback} (Chrome visível).")
-        return fallback
+        print("[chrome] Xvfb não encontrado — Chrome vai rodar em modo headless nativo.")
+        return ""
     try:
         r = subprocess.run(
             ["xdpyinfo", "-display", display],
@@ -111,7 +110,11 @@ def launch_chrome(
     display: str = XVFB_DISPLAY,
     cdp_url: str = CDP_URL,
 ) -> None:
-    """Lança Chrome se CDP ainda não estiver disponível."""
+    """Lança Chrome se CDP ainda não estiver disponível.
+
+    display='' → headless nativo (sem display virtual).
+    display=':99' etc → Xvfb/X11.
+    """
     if is_cdp_available(cdp_url):
         return
 
@@ -121,29 +124,38 @@ def launch_chrome(
     port = int(cdp_url.rstrip("/").rsplit(":", 1)[-1])
     chrome = _chrome_executable()
 
+    base_args = [
+        chrome,
+        f"--user-data-dir={profile_dir}",
+        "--profile-directory=Default",
+        "--no-first-run",
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--window-size=1280,1024",
+        f"--remote-debugging-port={port}",
+    ]
+
     env = os.environ.copy()
-    env["DISPLAY"] = display
+
+    if not display:
+        # Headless nativo — não precisa de display virtual
+        args = base_args + ["--headless=new"]
+        env.pop("DISPLAY", None)
+        print(f"[chrome] Chrome headless — aguardando CDP em {cdp_url}...")
+    else:
+        args = base_args + ["--new-window"]
+        env["DISPLAY"] = display
+        print(f"[chrome] Chrome em display={display} — aguardando CDP em {cdp_url}...")
 
     subprocess.Popen(
-        [
-            chrome,
-            f"--user-data-dir={profile_dir}",
-            "--profile-directory=Default",
-            "--new-window",
-            "--no-first-run",
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-gpu",
-            "--window-size=1280,1024",
-            f"--remote-debugging-port={port}",
-        ],
+        args,
         start_new_session=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         env=env,
     )
 
-    print(f"[chrome] Chrome iniciado em display={display} — aguardando CDP em {cdp_url}...")
     deadline = time.time() + 30
     while time.time() < deadline:
         time.sleep(1)
