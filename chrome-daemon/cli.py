@@ -69,7 +69,8 @@ def cmd_status(args) -> int:
         return 0
 
     for w in convs:
-        print(f"  [{w['state'].upper():11s}] alias={w['alias']!r:20s}  url={w['url'][:60]}")
+        chatgpt = f" ↔ {w['chatgpt_alias']}" if w.get("chatgpt_alias") else ""
+        print(f"  [{w['state'].upper():11s}] alias={w['alias']!r}{chatgpt}  url={w['url'][:60]}")
     return 0
 
 

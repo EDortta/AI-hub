@@ -106,6 +106,7 @@ async def setup():
 class RegisterRequest(BaseModel):
     url: str
     alias: str = ""
+    chatgpt_alias: str = ""
     purpose: str = ""
     interaction_poll_seconds: int = 5
     latency_poll_seconds: int = 60
@@ -118,6 +119,7 @@ async def register_conversation(req: RegisterRequest):
     w = ConversationWatcher(
         url=req.url,
         alias=req.alias,
+        chatgpt_alias=req.chatgpt_alias,
         purpose=req.purpose,
         interaction_poll_seconds=req.interaction_poll_seconds,
         latency_poll_seconds=req.latency_poll_seconds,
