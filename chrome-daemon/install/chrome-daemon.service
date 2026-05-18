@@ -1,7 +1,7 @@
 [Unit]
 Description=AI-Hub Chrome Daemon (ChatGPT shared bridge)
 Documentation=https://github.com/EDortta/AI-hub
-After=graphical-session.target network-online.target
+After=network-online.target
 Wants=network-online.target
 
 [Service]
