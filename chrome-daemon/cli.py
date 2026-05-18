@@ -7,6 +7,8 @@ Usage (run from inside the project dir):
     ai-hub status        # shows daemon status + active watchers
     ai-hub setup         # opens Chrome for manual ChatGPT login
     ai-hub logs          # tail daemon log (if journald)
+    ai-hub send <alias> <text>   # send message to the conversation registered under <alias>
+    ai-hub read <alias>          # print last assistant message from that conversation
     ai-hub generate-image <gpt_url> <prompt> [--orientation portrait|landscape|square]
 """
 from __future__ import annotations
@@ -85,6 +87,48 @@ def cmd_logs(args) -> int:
     os.execvp("journalctl", ["journalctl", "--user", "-u", "chrome-daemon", "-f"])
 
 
+def _find_watcher_by_alias(client: "AIHubClient", alias: str) -> "dict | None":
+    alias_lower = alias.lower()
+    for w in client.list_conversations():
+        if w.get("alias", "").lower() == alias_lower:
+            return w
+    return None
+
+
+def cmd_send(args) -> int:
+    client = _client()
+    if not client.is_alive():
+        print(f"ERROR: ai-hub daemon not reachable at {DAEMON_URL}.", file=sys.stderr)
+        return 1
+    w = _find_watcher_by_alias(client, args.alias)
+    if w is None:
+        print(f"ERROR: no registered watcher with alias {args.alias!r}.", file=sys.stderr)
+        print("Registered aliases:", file=sys.stderr)
+        for conv in client.list_conversations():
+            print(f"  {conv['alias']!r}", file=sys.stderr)
+        return 1
+    client.send_to_conversation(w["id"], args.text)
+    print(f"Sent to {args.alias!r} ({w['id'][:8]}): {args.text!r}")
+    return 0
+
+
+def cmd_read(args) -> int:
+    client = _client()
+    if not client.is_alive():
+        print(f"ERROR: ai-hub daemon not reachable at {DAEMON_URL}.", file=sys.stderr)
+        return 1
+    w = _find_watcher_by_alias(client, args.alias)
+    if w is None:
+        print(f"ERROR: no registered watcher with alias {args.alias!r}.", file=sys.stderr)
+        return 1
+    msg = client.get_last_message(w["id"])
+    if msg is None:
+        print("(no assistant message found)")
+    else:
+        print(msg.get("text", ""))
+    return 0
+
+
 def cmd_generate_image(args) -> int:
     client = _client()
     print(f"Generating image via {args.gpt_url}...")
@@ -111,6 +155,13 @@ def main() -> int:
     sub.add_parser("setup", help="Open Chrome for manual ChatGPT login")
     sub.add_parser("logs", help="Tail daemon logs via journalctl")
 
+    p_send = sub.add_parser("send", help="Send a message to a registered conversation by alias")
+    p_send.add_argument("alias", help="Watcher alias (e.g. Claudia)")
+    p_send.add_argument("text", help="Message text to send")
+
+    p_read = sub.add_parser("read", help="Print the last assistant message from a conversation")
+    p_read.add_argument("alias", help="Watcher alias (e.g. Claudia)")
+
     p_gen = sub.add_parser("generate-image", help="Generate an image")
     p_gen.add_argument("gpt_url", help="ChatGPT GPT URL")
     p_gen.add_argument("prompt", help="Image prompt")
@@ -125,6 +176,8 @@ def main() -> int:
         "status": cmd_status,
         "setup": cmd_setup,
         "logs": cmd_logs,
+        "send": cmd_send,
+        "read": cmd_read,
         "generate-image": cmd_generate_image,
     }
 
