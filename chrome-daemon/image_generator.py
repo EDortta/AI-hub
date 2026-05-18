@@ -1,0 +1,194 @@
+"""Image generation via ChatGPT GPT models.
+
+Extracted from IgrejaPequena/sofia.py and Dopamin Captain/daily_post.py.
+Uses the shared Chrome instance managed by chrome_manager.
+"""
+from __future__ import annotations
+
+import io
+import logging
+import time
+from datetime import datetime
+from pathlib import Path
+
+log = logging.getLogger("ai-hub.image")
+
+DEFAULT_OUTPUT_DIR = Path.home() / ".local" / "share" / "ai-hub" / "images"
+IMAGE_TIMEOUT_S = 600
+_GENERATED_IMG_MIN_PX = 300
+
+
+def _is_generated_src(url: str) -> bool:
+    return "estuary" in url or "oaidall" in url
+
+
+def _estuary_srcs(page) -> set[str]:
+    data = page.locator("img").evaluate_all(
+        "imgs => imgs.map(i => [i.src, i.currentSrc || i.src])"
+    )
+    result: set[str] = set()
+    for pair in data:
+        for s in pair:
+            if s and _is_generated_src(s):
+                result.add(s)
+    return result
+
+
+def _fill_and_send(page, full_prompt: str) -> None:
+    selectors = ("textarea", "div[contenteditable='true']", "[role='textbox']")
+    for sel in selectors:
+        loc = page.locator(sel).last
+        try:
+            loc.wait_for(state="visible", timeout=10_000)
+            loc.fill(full_prompt)
+            break
+        except Exception:
+            continue
+    else:
+        raise RuntimeError("Campo de texto do ChatGPT não encontrado.")
+
+    send_selectors = (
+        "button[data-testid='send-button']",
+        "button[aria-label*='Send']",
+        "button[aria-label*='send']",
+    )
+    for sel in send_selectors:
+        try:
+            btn = page.locator(sel).last
+            btn.wait_for(state="visible", timeout=5_000)
+            btn.click()
+            return
+        except Exception:
+            continue
+    page.keyboard.press("Enter")
+
+
+def _wait_for_done(page) -> None:
+    stop_selectors = (
+        "button[aria-label='Stop streaming']",
+        "button[aria-label='Stop generating']",
+        "[data-testid='stop-button']",
+        "button[aria-label*='stop' i]",
+    )
+
+    def any_stop() -> bool:
+        try:
+            return any(page.locator(s).is_visible() for s in stop_selectors)
+        except Exception:
+            return False
+
+    deadline = time.time() + 60
+    while time.time() < deadline and not any_stop():
+        page.wait_for_timeout(5_000)
+
+    deadline = time.time() + IMAGE_TIMEOUT_S
+    while time.time() < deadline:
+        if not any_stop():
+            log.info("Image generation complete.")
+            return
+        page.wait_for_timeout(15_000)
+    raise RuntimeError("ChatGPT não concluiu a geração dentro do tempo limite.")
+
+
+def _wait_for_new_image(page, before_srcs: set[str]) -> str:
+    deadline = time.time() + IMAGE_TIMEOUT_S
+    while time.time() < deadline:
+        all_imgs = page.locator("img")
+        count = all_imgs.count()
+        for i in range(count - 1, -1, -1):
+            try:
+                img = all_imgs.nth(i)
+                info = img.evaluate(
+                    "img => ({src: img.src, cur: img.currentSrc || img.src, "
+                    "w: img.naturalWidth, h: img.naturalHeight})"
+                )
+                src = info.get("src") or ""
+                cur = info.get("cur") or ""
+                if info.get("w", 0) < _GENERATED_IMG_MIN_PX or info.get("h", 0) < _GENERATED_IMG_MIN_PX:
+                    continue
+                if not (_is_generated_src(src) or _is_generated_src(cur)):
+                    continue
+                if src in before_srcs or cur in before_srcs:
+                    continue
+                img.scroll_into_view_if_needed()
+                img.click()
+                page.wait_for_timeout(8_000)
+                return src or cur
+            except Exception:
+                continue
+        page.wait_for_timeout(15_000)
+    raise RuntimeError("Nenhuma imagem nova apareceu dentro do tempo limite.")
+
+
+def _download_image(page, src: str, output_path: Path) -> None:
+    import urllib.parse
+    parsed = urllib.parse.urlparse(src)
+    params = urllib.parse.parse_qs(parsed.query)
+    file_id = (params.get("id") or [""])[0]
+
+    page.wait_for_timeout(3_000)
+    best_src = src
+    if file_id:
+        candidates = page.locator("img").evaluate_all(
+            "imgs => imgs.map(img => ({src: img.currentSrc || img.src, "
+            "w: img.naturalWidth, h: img.naturalHeight}))"
+        )
+        best_area = 0
+        for c in candidates:
+            csrc = c.get("src") or ""
+            if file_id not in csrc:
+                continue
+            w = int(c.get("w") or 0)
+            h = int(c.get("h") or 0)
+            if w * h > best_area:
+                best_area = w * h
+                best_src = csrc
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    response = page.context.request.get(best_src, timeout=120_000)
+    if not response.ok:
+        raise RuntimeError(f"Falha ao baixar imagem: HTTP {response.status} — {best_src}")
+
+    raw = response.body()
+    try:
+        from PIL import Image as _PILImage
+        img_obj = _PILImage.open(io.BytesIO(raw)).convert("RGBA")
+        img_obj.save(str(output_path), format="PNG")
+    except Exception:
+        output_path.write_bytes(raw)
+
+
+def generate_image(
+    gpt_url: str,
+    prompt: str,
+    orientation: str = "portrait",
+    output_dir: Path = DEFAULT_OUTPUT_DIR,
+    greeting: str = "Hey, ",
+    cdp_url: str = "http://127.0.0.1:9222",
+) -> Path:
+    """Sends prompt to a ChatGPT image GPT and saves the generated image.
+
+    Uses the shared Chrome instance — must be already running.
+    """
+    from chrome_manager import ChromeManager
+
+    full_prompt = f"{greeting}{prompt} — orientação {orientation}"
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    output_path = output_dir / f"ai-hub-{stamp}.png"
+
+    log.info("Generating image: %.80s", full_prompt)
+
+    with ChromeManager(cdp_url=cdp_url) as mgr:
+        page = mgr.get_or_open_page(gpt_url)
+
+        before_srcs = _estuary_srcs(page)
+        log.info("Existing images in page: %d", len(before_srcs))
+
+        _fill_and_send(page, full_prompt)
+        _wait_for_done(page)
+
+        new_src = _wait_for_new_image(page, before_srcs)
+        _download_image(page, new_src, output_path)
+
+    log.info("Image saved: %s", output_path)
+    return output_path

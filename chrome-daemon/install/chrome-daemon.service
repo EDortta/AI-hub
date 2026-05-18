@@ -1,0 +1,19 @@
+[Unit]
+Description=AI-Hub Chrome Daemon (ChatGPT shared bridge)
+Documentation=https://github.com/EDortta/AI-hub
+After=graphical-session.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/Sync/Projects/AI-hub/chrome-daemon/main.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=chrome-daemon
+Environment=DISPLAY=:99
+Environment=AI_HUB_PORT=9400
+
+[Install]
+WantedBy=default.target
