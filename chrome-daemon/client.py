@@ -58,6 +58,7 @@ class AIHubClient:
         self,
         url: str,
         alias: str = "",
+        chatgpt_alias: str = "",
         purpose: str = "",
         interaction_poll_seconds: int = 5,
         latency_poll_seconds: int = 60,
@@ -66,6 +67,7 @@ class AIHubClient:
         return self._post("/conversations/register", {
             "url": url,
             "alias": alias,
+            "chatgpt_alias": chatgpt_alias,
             "purpose": purpose,
             "interaction_poll_seconds": interaction_poll_seconds,
             "latency_poll_seconds": latency_poll_seconds,
@@ -119,6 +121,7 @@ class AIHubClient:
             result = self.register_conversation(
                 url=conv["url"],
                 alias=conv.get("alias", ""),
+                chatgpt_alias=conv.get("chatgpt_alias", ""),
                 purpose=conv.get("purpose", ""),
                 interaction_poll_seconds=conv.get("interaction_poll_seconds", 5),
                 latency_poll_seconds=conv.get("latency_poll_seconds", 60),

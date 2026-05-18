@@ -115,6 +115,7 @@ class ConversationWatcher:
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     url: str = ""
     alias: str = ""
+    chatgpt_alias: str = ""
     purpose: str = ""
     interaction_poll_seconds: int = 5
     latency_poll_seconds: int = 60
@@ -136,6 +137,7 @@ class ConversationWatcher:
             "id": self.id,
             "url": self.url,
             "alias": self.alias,
+            "chatgpt_alias": self.chatgpt_alias,
             "purpose": self.purpose,
             "state": self.state.value,
             "interaction_poll_seconds": self.interaction_poll_seconds,
