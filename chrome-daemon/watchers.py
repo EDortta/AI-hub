@@ -20,6 +20,7 @@ from typing import Any
 
 import httpx
 
+from chrome_manager import playwright_executor
 from router import find_watcher_for_message
 
 log = logging.getLogger("ai-hub.watchers")
@@ -249,7 +250,7 @@ async def poll_watcher(watcher: ConversationWatcher, chrome_manager_factory) -> 
             return _expand_and_extract(page)
 
     try:
-        messages = await loop.run_in_executor(None, _sync_poll)
+        messages = await loop.run_in_executor(playwright_executor, _sync_poll)
     except Exception as e:
         log.warning("Poll error for watcher %s: %s", watcher.id[:8], e)
         return

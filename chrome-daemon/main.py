@@ -34,6 +34,7 @@ from chrome_manager import (
     is_cdp_available,
     launch_chrome,
     launch_visible_chrome,
+    playwright_executor,
 )
 from watchers import ConversationWatcher, WatcherRegistry, WatcherState, run_polling_loop
 
@@ -95,7 +96,7 @@ async def status():
 async def setup():
     """Launch Chrome visibly so the user can log in to ChatGPT."""
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, launch_visible_chrome)
+    await loop.run_in_executor(playwright_executor, launch_visible_chrome)
     return {"ok": True, "message": "Chrome aberto no display real para login manual."}
 
 
@@ -165,7 +166,7 @@ async def send_message(watcher_id: str, req: SendRequest):
         with ChromeManager(cdp_url=CDP_URL) as mgr:
             return mgr.send_message(w.url, req.text)
 
-    ok = await loop.run_in_executor(None, _sync_send)
+    ok = await loop.run_in_executor(playwright_executor, _sync_send)
     if not ok:
         raise HTTPException(status_code=500, detail="Failed to send message to ChatGPT page")
     return {"ok": True}
@@ -189,7 +190,7 @@ async def get_last_message(watcher_id: str):
             page.wait_for_timeout(2_000)
             return _expand_and_extract(page)
 
-    messages = await loop.run_in_executor(None, _sync_peek)
+    messages = await loop.run_in_executor(playwright_executor, _sync_peek)
     last_assistant = next((m for m in reversed(messages) if m.get("role") == "assistant"), None)
     return {"message": last_assistant}
 

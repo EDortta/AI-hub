@@ -5,6 +5,8 @@ Chrome runs on Xvfb :99 (hidden). Call show()/hide() to expose it temporarily.
 """
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import contextlib
 import os
 import shutil
@@ -19,6 +21,14 @@ XVFB_DISPLAY = ":99"
 CHROME_PROFILE = Path.home() / ".local" / "share" / "ai-hub" / "chrome-profile"
 
 _SINGLETON_FILES = ("SingletonCookie", "SingletonLock", "SingletonSocket")
+
+# Executor dedicado para chamadas Playwright (sync API).
+# O initializer garante que cada thread deste pool não tenha event loop asyncio,
+# evitando o erro "Playwright Sync API inside asyncio loop".
+playwright_executor = concurrent.futures.ThreadPoolExecutor(
+    initializer=lambda: asyncio.set_event_loop(None),
+    thread_name_prefix="playwright",
+)
 
 
 # ---------------------------------------------------------------------------
