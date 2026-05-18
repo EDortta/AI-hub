@@ -1,0 +1,197 @@
+#!/usr/bin/env python3
+"""AI-Hub Chrome Daemon.
+
+FastAPI HTTP daemon that owns the shared Chrome instance and provides:
+- Conversation watching with alias-based routing
+- Image generation via ChatGPT GPT models
+- Chrome lifecycle management (hidden Xvfb by default)
+
+Port: 9400
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import sys
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+import uvicorn
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+
+# Ensure chrome-daemon dir is on the path when run as a script
+sys.path.insert(0, str(Path(__file__).parent))
+
+from chrome_manager import (
+    CDP_URL,
+    CHROME_PROFILE,
+    XVFB_DISPLAY,
+    ChromeManager,
+    ensure_xvfb,
+    is_cdp_available,
+    launch_chrome,
+    launch_visible_chrome,
+)
+from watchers import ConversationWatcher, WatcherRegistry, WatcherState, run_polling_loop
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+log = logging.getLogger("ai-hub.main")
+
+DAEMON_PORT = int(os.environ.get("AI_HUB_PORT", "9400"))
+
+registry = WatcherRegistry()
+
+
+def _chrome_manager_factory():
+    return ChromeManager(cdp_url=CDP_URL)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: ensure Xvfb and Chrome
+    display = ensure_xvfb(XVFB_DISPLAY)
+    launch_chrome(profile_dir=CHROME_PROFILE, display=display, cdp_url=CDP_URL)
+    log.info("Chrome ready at %s", CDP_URL)
+
+    # Start polling loop in background
+    task = asyncio.create_task(run_polling_loop(registry, _chrome_manager_factory))
+    log.info("Polling loop started.")
+
+    yield
+
+    task.cancel()
+    log.info("AI-Hub daemon stopped.")
+
+
+app = FastAPI(title="AI-Hub Chrome Daemon", version="1.0.0", lifespan=lifespan)
+
+
+# ---------------------------------------------------------------------------
+# Status
+# ---------------------------------------------------------------------------
+
+@app.get("/status")
+async def status():
+    return {
+        "ok": True,
+        "chrome_cdp_available": is_cdp_available(CDP_URL),
+        "cdp_url": CDP_URL,
+        "watchers": len(registry.all()),
+        "display": os.environ.get("DISPLAY", XVFB_DISPLAY),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Setup (show Chrome for manual login)
+# ---------------------------------------------------------------------------
+
+@app.get("/setup")
+async def setup():
+    """Launch Chrome visibly so the user can log in to ChatGPT."""
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, launch_visible_chrome)
+    return {"ok": True, "message": "Chrome aberto no display real para login manual."}
+
+
+# ---------------------------------------------------------------------------
+# Conversations
+# ---------------------------------------------------------------------------
+
+class RegisterRequest(BaseModel):
+    url: str
+    alias: str = ""
+    purpose: str = ""
+    interaction_poll_seconds: int = 5
+    latency_poll_seconds: int = 60
+    callback_url: str = ""
+    project_path: str = ""
+
+
+@app.post("/conversations/register", status_code=201)
+async def register_conversation(req: RegisterRequest):
+    w = ConversationWatcher(
+        url=req.url,
+        alias=req.alias,
+        purpose=req.purpose,
+        interaction_poll_seconds=req.interaction_poll_seconds,
+        latency_poll_seconds=req.latency_poll_seconds,
+        callback_url=req.callback_url,
+        project_path=req.project_path,
+    )
+    registry.register(w)
+    return w.to_dict()
+
+
+@app.delete("/conversations/{watcher_id}")
+async def unregister_conversation(watcher_id: str):
+    if not registry.unregister(watcher_id):
+        raise HTTPException(status_code=404, detail="Watcher not found")
+    return {"ok": True}
+
+
+@app.delete("/conversations/by-project/{project_path:path}")
+async def unregister_by_project(project_path: str):
+    count = registry.unregister_by_project(project_path)
+    return {"ok": True, "removed": count}
+
+
+@app.get("/conversations")
+async def list_conversations():
+    return [w.to_dict() for w in registry.all()]
+
+
+# ---------------------------------------------------------------------------
+# Image generation
+# ---------------------------------------------------------------------------
+
+class ImageRequest(BaseModel):
+    gpt_url: str
+    prompt: str
+    orientation: str = "portrait"
+    output_dir: str = ""
+    greeting: str = "Hey, "
+
+
+@app.post("/image/generate")
+async def generate_image(req: ImageRequest):
+    from image_generator import DEFAULT_OUTPUT_DIR, generate_image as _gen
+
+    output_dir = Path(req.output_dir).expanduser() if req.output_dir else DEFAULT_OUTPUT_DIR
+
+    loop = asyncio.get_event_loop()
+    try:
+        image_path = await loop.run_in_executor(
+            None,
+            lambda: _gen(
+                gpt_url=req.gpt_url,
+                prompt=req.prompt,
+                orientation=req.orientation,
+                output_dir=output_dir,
+                greeting=req.greeting,
+                cdp_url=CDP_URL,
+            ),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {"ok": True, "image_path": str(image_path)}
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    uvicorn.run(
+        "main:app",
+        host="127.0.0.1",
+        port=DAEMON_PORT,
+        log_level="info",
+        reload=False,
+    )
