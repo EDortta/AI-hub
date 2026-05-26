@@ -31,6 +31,21 @@ playwright_executor = concurrent.futures.ThreadPoolExecutor(
 )
 
 
+async def run_playwright_async(fn, timeout: int = 700):
+    """Run a sync playwright callable in a brand-new thread.
+
+    ThreadPoolExecutor reuses threads. Playwright 1.x calls
+    asyncio._set_running_loop() at the end of every sync operation, leaving
+    stale running-loop state on the thread. The next sync_playwright() call
+    on that same thread sees a non-None running loop → 'Sync API inside asyncio
+    loop' error. A one-shot executor creates a fresh thread every time,
+    avoiding the stale state entirely.
+    """
+    loop = asyncio.get_event_loop()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as exe:
+        return await loop.run_in_executor(exe, fn)
+
+
 # ---------------------------------------------------------------------------
 # Low-level helpers
 # ---------------------------------------------------------------------------
@@ -166,13 +181,13 @@ def launch_chrome(
         env=env,
     )
 
-    deadline = time.time() + 30
+    deadline = time.time() + 60
     while time.time() < deadline:
         time.sleep(1)
         if is_cdp_available(cdp_url):
             print("[chrome] CDP pronto.")
             return
-    raise RuntimeError(f"Chrome não expôs CDP em {cdp_url} dentro de 30s.")
+    raise RuntimeError(f"Chrome não expôs CDP em {cdp_url} dentro de 60s.")
 
 
 def launch_visible_chrome(
@@ -271,4 +286,102 @@ class ChromeManager:
         except Exception as e:
             import logging
             logging.getLogger("ai-hub.chrome").warning("send_message error: %s", e)
+            return False
+
+
+# ---------------------------------------------------------------------------
+# Async variant — usa async_playwright para não conflitar com o event loop asyncio.
+# Usado pelos endpoints FastAPI (send, poll) que rodam diretamente no loop asyncio.
+# ---------------------------------------------------------------------------
+
+class AsyncChromeManager:
+    """Context manager assíncrono que conecta ao Chrome via async Playwright CDP."""
+
+    def __init__(self, cdp_url: str = CDP_URL):
+        self._cdp_url = cdp_url
+        self._playwright = None
+        self._browser = None
+
+    async def __aenter__(self):
+        from playwright.async_api import async_playwright
+        self._pw_ctx = async_playwright()
+        self._playwright = await self._pw_ctx.__aenter__()
+        self._browser = await self._playwright.chromium.connect_over_cdp(self._cdp_url)
+        return self
+
+    async def __aexit__(self, *_):
+        with contextlib.suppress(Exception):
+            await self._pw_ctx.__aexit__(None, None, None)
+
+    @property
+    def context(self):
+        ctxs = self._browser.contexts
+        return ctxs[0] if ctxs else None
+
+    async def _ensure_context(self):
+        ctx = self.context
+        if ctx is None:
+            ctx = await self._browser.new_context()
+        return ctx
+
+    async def find_page(self, url_contains: str):
+        ctx = await self._ensure_context()
+        for page in ctx.pages:
+            try:
+                if url_contains in (page.url or ""):
+                    return page
+            except Exception:
+                continue
+        return None
+
+    async def get_or_open_page(self, url: str):
+        ctx = await self._ensure_context()
+        base = url.split("?")[0]
+        for page in ctx.pages:
+            try:
+                if (page.url or "").split("?")[0] == base:
+                    return page
+            except Exception:
+                continue
+        page = await ctx.new_page()
+        await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+        try:
+            await page.wait_for_load_state("networkidle", timeout=15_000)
+        except Exception:
+            pass
+        return page
+
+    async def send_message(self, url: str, text: str) -> bool:
+        page = await self.get_or_open_page(url)
+        try:
+            selectors = ("textarea", "div[contenteditable='true']", "[role='textbox']")
+            for sel in selectors:
+                loc = page.locator(sel).last
+                try:
+                    await loc.wait_for(state="visible", timeout=5_000)
+                    await loc.click()
+                    await page.keyboard.type(text)
+                    break
+                except Exception:
+                    continue
+            else:
+                return False
+
+            send_sels = (
+                "button[data-testid='send-button']",
+                "button[aria-label*='Send']",
+                "button[aria-label*='send']",
+            )
+            for ss in send_sels:
+                try:
+                    await page.locator(ss).wait_for(state="visible", timeout=3_000)
+                    await page.locator(ss).click()
+                    return True
+                except Exception:
+                    pass
+            await page.keyboard.press("Enter")
+            return True
+        except Exception as e:
+            import logging
+            logging.getLogger("ai-hub.chrome").warning("async send_message error: %s", e)
             return False

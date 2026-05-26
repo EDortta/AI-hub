@@ -36,6 +36,7 @@ from chrome_manager import (
     launch_chrome,
     launch_visible_chrome,
     playwright_executor,
+    run_playwright_async,
 )
 from watchers import ConversationWatcher, WatcherRegistry, WatcherState, run_polling_loop
 
@@ -253,10 +254,8 @@ async def generate_image(req: ImageRequest):
     output_dir = Path(req.output_dir).expanduser() if req.output_dir else DEFAULT_OUTPUT_DIR
     ref_path = Path(req.reference_image_path).expanduser() if req.reference_image_path else None
 
-    loop = asyncio.get_event_loop()
     try:
-        image_path = await loop.run_in_executor(
-            playwright_executor,
+        image_path = await run_playwright_async(
             lambda: _gen(
                 gpt_url=req.gpt_url,
                 prompt=req.prompt,
@@ -266,6 +265,7 @@ async def generate_image(req: ImageRequest):
                 cdp_url=CDP_URL,
                 reference_image_path=ref_path,
             ),
+            timeout=700,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -291,11 +291,10 @@ async def publish_to_x(req: PublishSocialRequest):
     if not image_path.exists():
         raise HTTPException(status_code=400, detail=f"Image not found: {image_path}")
 
-    loop = asyncio.get_event_loop()
     try:
-        await loop.run_in_executor(
-            playwright_executor,
+        await run_playwright_async(
             lambda: _pub(image_path, req.caption, req.url, CDP_URL),
+            timeout=120,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -311,11 +310,10 @@ async def publish_to_linkedin(req: PublishSocialRequest):
     if not image_path.exists():
         raise HTTPException(status_code=400, detail=f"Image not found: {image_path}")
 
-    loop = asyncio.get_event_loop()
     try:
-        await loop.run_in_executor(
-            playwright_executor,
+        await run_playwright_async(
             lambda: _pub(image_path, req.caption, req.url, CDP_URL),
+            timeout=300,
         )
     except Exception as e:
         log.error("publish_to_linkedin failed: %s", e, exc_info=True)

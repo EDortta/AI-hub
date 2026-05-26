@@ -20,7 +20,7 @@ from typing import Any
 
 import httpx
 
-from chrome_manager import ChromeManager, playwright_executor
+from chrome_manager import ChromeManager, playwright_executor, run_playwright_async
 from router import find_watcher_for_message
 
 log = logging.getLogger("ai-hub.watchers")
@@ -297,12 +297,11 @@ def _sync_fetch_messages(url: str) -> list[dict]:
 
 
 async def poll_watcher(watcher: ConversationWatcher, chrome_manager_factory) -> None:
-    """Single poll cycle for one watcher. Uses sync playwright via playwright_executor."""
-    loop = asyncio.get_event_loop()
+    """Single poll cycle for one watcher. Uses sync playwright in a fresh thread."""
     try:
-        messages = await loop.run_in_executor(
-            playwright_executor,
+        messages = await run_playwright_async(
             lambda: _sync_fetch_messages(watcher.url),
+            timeout=120,
         )
     except Exception as e:
         log.warning("Poll error for watcher %s: %s", watcher.id[:8], e)
