@@ -26,6 +26,7 @@ from pydantic import BaseModel
 sys.path.insert(0, str(Path(__file__).parent))
 
 from chrome_manager import (
+    AsyncChromeManager,
     CDP_URL,
     CHROME_PROFILE,
     XVFB_DISPLAY,
@@ -160,39 +161,76 @@ async def send_message(watcher_id: str, req: SendRequest):
     if not w:
         raise HTTPException(status_code=404, detail="Watcher not found")
 
-    loop = asyncio.get_event_loop()
-
-    def _sync_send():
-        with ChromeManager(cdp_url=CDP_URL) as mgr:
-            return mgr.send_message(w.url, req.text)
-
-    ok = await loop.run_in_executor(playwright_executor, _sync_send)
+    async with AsyncChromeManager(cdp_url=CDP_URL) as mgr:
+        ok = await mgr.send_message(w.url, req.text)
     if not ok:
         raise HTTPException(status_code=500, detail="Failed to send message to ChatGPT page")
+    return {"ok": True}
+
+
+@app.get("/conversations/{watcher_id}/inbox")
+async def get_inbox(watcher_id: str):
+    """Return all pending inbox messages for this watcher (addressed to its alias)."""
+    w = registry.get(watcher_id)
+    if not w:
+        raise HTTPException(status_code=404, detail="Watcher not found")
+    return {"inbox": list(w.inbox)}
+
+
+@app.delete("/conversations/{watcher_id}/inbox")
+async def clear_inbox(watcher_id: str):
+    """Clear all inbox messages for this watcher."""
+    w = registry.get(watcher_id)
+    if not w:
+        raise HTTPException(status_code=404, detail="Watcher not found")
+    w.inbox.clear()
     return {"ok": True}
 
 
 @app.get("/conversations/{watcher_id}/last-message")
 async def get_last_message(watcher_id: str):
     """Return the last assistant message in the watcher's conversation."""
-    from watchers import _expand_and_extract
+    from watchers import _async_expand_and_extract
 
     w = registry.get(watcher_id)
     if not w:
         raise HTTPException(status_code=404, detail="Watcher not found")
 
-    loop = asyncio.get_event_loop()
+    async with AsyncChromeManager(cdp_url=CDP_URL) as mgr:
+        page = await mgr.get_or_open_page(w.url)
+        await page.keyboard.press("Home")
+        await page.wait_for_timeout(2_000)
+        messages = await _async_expand_and_extract(page)
 
-    def _sync_peek():
-        with ChromeManager(cdp_url=CDP_URL) as mgr:
-            page = mgr.get_or_open_page(w.url)
-            page.keyboard.press("Home")
-            page.wait_for_timeout(2_000)
-            return _expand_and_extract(page)
-
-    messages = await loop.run_in_executor(playwright_executor, _sync_peek)
     last_assistant = next((m for m in reversed(messages) if m.get("role") == "assistant"), None)
     return {"message": last_assistant}
+
+
+# ---------------------------------------------------------------------------
+# Diagnostics
+# ---------------------------------------------------------------------------
+
+@app.get("/debug/screenshot")
+async def debug_screenshot(url_contains: str = "chatgpt"):
+    """Save a screenshot of the matching Chrome page for visual debugging."""
+    import base64
+    from pathlib import Path as _Path
+
+    out = _Path.home() / ".local" / "share" / "ai-hub" / "debug-screenshot.png"
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    async with AsyncChromeManager(cdp_url=CDP_URL) as mgr:
+        ctx = mgr.context
+        if ctx is None:
+            raise HTTPException(status_code=503, detail="No browser context")
+        pages = ctx.pages
+        page = next((p for p in pages if url_contains in (p.url or "")), None)
+        if page is None:
+            urls = [p.url for p in pages]
+            raise HTTPException(status_code=404, detail=f"No page matching '{url_contains}'. Open: {urls}")
+        await page.screenshot(path=str(out), full_page=False)
+
+    return {"ok": True, "saved": str(out)}
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +256,7 @@ async def generate_image(req: ImageRequest):
     loop = asyncio.get_event_loop()
     try:
         image_path = await loop.run_in_executor(
-            None,
+            playwright_executor,
             lambda: _gen(
                 gpt_url=req.gpt_url,
                 prompt=req.prompt,
@@ -256,7 +294,7 @@ async def publish_to_x(req: PublishSocialRequest):
     loop = asyncio.get_event_loop()
     try:
         await loop.run_in_executor(
-            None,
+            playwright_executor,
             lambda: _pub(image_path, req.caption, req.url, CDP_URL),
         )
     except Exception as e:
@@ -276,10 +314,11 @@ async def publish_to_linkedin(req: PublishSocialRequest):
     loop = asyncio.get_event_loop()
     try:
         await loop.run_in_executor(
-            None,
+            playwright_executor,
             lambda: _pub(image_path, req.caption, req.url, CDP_URL),
         )
     except Exception as e:
+        log.error("publish_to_linkedin failed: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
     return {"ok": True}

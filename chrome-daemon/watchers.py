@@ -20,7 +20,7 @@ from typing import Any
 
 import httpx
 
-from chrome_manager import playwright_executor
+from chrome_manager import ChromeManager, playwright_executor
 from router import find_watcher_for_message
 
 log = logging.getLogger("ai-hub.watchers")
@@ -111,6 +111,9 @@ class WatcherState(str, Enum):
     LATENCY = "latency"
 
 
+INBOX_MAX = 50
+
+
 @dataclass
 class ConversationWatcher:
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
@@ -127,6 +130,11 @@ class ConversationWatcher:
     last_message_at: float = field(default_factory=time.time)
     last_seen_hash: str | None = None
     registered_at: float = field(default_factory=time.time)
+
+    # Inbox: messages addressed to this alias (user or assistant), capped at INBOX_MAX
+    inbox: list = field(default_factory=list)
+    # Hashes of all messages already routed to inbox (prevents duplicates)
+    seen_hashes: set = field(default_factory=set)
 
     def poll_interval(self) -> int:
         if self.state == WatcherState.INTERACTION:
@@ -147,6 +155,7 @@ class ConversationWatcher:
             "project_path": self.project_path,
             "last_message_at": self.last_message_at,
             "registered_at": self.registered_at,
+            "inbox_count": len(self.inbox),
         }
 
 
@@ -228,6 +237,47 @@ def _expand_and_extract(page) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# Async variant of expand+extract (uses async playwright page)
+# ---------------------------------------------------------------------------
+
+async def _async_expand_and_extract(page) -> list[dict[str, Any]]:
+    try:
+        result = await page.evaluate(EXPAND_JS) or {}
+        clicked = int(result.get("clicked") or 0)
+        if clicked > 0:
+            await page.wait_for_timeout(600)
+    except Exception:
+        pass
+
+    for _ in range(4):
+        await page.keyboard.press("PageDown")
+        await page.wait_for_timeout(250)
+
+    try:
+        result = await page.evaluate(EXPAND_JS) or {}
+        clicked = int(result.get("clicked") or 0)
+        if clicked > 0:
+            await page.wait_for_timeout(600)
+    except Exception:
+        pass
+
+    try:
+        msgs = await page.evaluate(EXTRACT_JS) or []
+        cleaned = []
+        for m in msgs:
+            text = (m.get("text") or "").strip()
+            if not text:
+                continue
+            text = _UI_ARTIFACTS.sub("", text).strip()
+            if text:
+                cleaned.append({**m, "text": text})
+        return cleaned
+    except Exception as e:
+        log.warning("Error extracting messages (async): %s", e)
+        return []
+
+
+# ---------------------------------------------------------------------------
 # Async polling loop
 # ---------------------------------------------------------------------------
 
@@ -239,18 +289,21 @@ async def _dispatch_callback(callback_url: str, payload: dict) -> None:
         log.warning("Callback to %s failed: %s", callback_url, e)
 
 
+def _sync_fetch_messages(url: str) -> list[dict]:
+    """Fetch conversation messages synchronously. Runs in playwright_executor."""
+    with ChromeManager() as mgr:
+        page = mgr.get_or_open_page(url)
+        return _expand_and_extract(page)
+
+
 async def poll_watcher(watcher: ConversationWatcher, chrome_manager_factory) -> None:
-    """Single poll cycle for one watcher. Runs in executor to avoid blocking asyncio."""
+    """Single poll cycle for one watcher. Uses sync playwright via playwright_executor."""
     loop = asyncio.get_event_loop()
-
-    def _sync_poll():
-        mgr = chrome_manager_factory()
-        with mgr:
-            page = mgr.get_or_open_page(watcher.url)
-            return _expand_and_extract(page)
-
     try:
-        messages = await loop.run_in_executor(playwright_executor, _sync_poll)
+        messages = await loop.run_in_executor(
+            playwright_executor,
+            lambda: _sync_fetch_messages(watcher.url),
+        )
     except Exception as e:
         log.warning("Poll error for watcher %s: %s", watcher.id[:8], e)
         return
@@ -274,45 +327,74 @@ async def poll_watcher(watcher: ConversationWatcher, chrome_manager_factory) -> 
         if watcher.state == WatcherState.INTERACTION and idle_s > watcher.latency_poll_seconds:
             watcher.state = WatcherState.LATENCY
             log.info("Watcher %s → LATENCY (idle %.0fs)", watcher.id[:8], idle_s)
-        return
+    else:
+        # Update state to INTERACTION and dispatch each new user message
+        watcher.state = WatcherState.INTERACTION
+        watcher.last_message_at = time.time()
 
-    # Update state to INTERACTION and dispatch each new message
-    watcher.state = WatcherState.INTERACTION
-    watcher.last_message_at = time.time()
+        for msg in new_msgs:
+            watcher.last_seen_hash = _msg_hash(msg["text"])
+            text = msg["text"]
 
-    for msg in new_msgs:
-        watcher.last_seen_hash = _msg_hash(msg["text"])
-        text = msg["text"]
+            payload = {
+                "watcher_id": watcher.id,
+                "alias": watcher.alias,
+                "url": watcher.url,
+                "role": msg.get("role", "user"),
+                "text": text,
+                "turn_id": msg.get("turn_id", ""),
+            }
 
-        # Find alias match among watchers sharing the same URL
-        matched_watcher = watcher  # default: send to this watcher
+            log.info("New message for alias=%r: %.60s…", watcher.alias, text)
+
+            if watcher.callback_url:
+                await _dispatch_callback(watcher.callback_url, payload)
+
+    # Populate inbox: scan ALL messages (user + assistant) for alias-addressed content
+    if watcher.alias:
         from router import find_watcher_for_message
-        # (registry passed via factory; simplified here — main.py handles cross-URL routing)
-
-        payload = {
-            "watcher_id": watcher.id,
-            "alias": watcher.alias,
-            "url": watcher.url,
-            "role": msg.get("role", "user"),
-            "text": text,
-            "turn_id": msg.get("turn_id", ""),
-        }
-
-        log.info("New message for alias=%r: %.60s…", watcher.alias, text)
-
-        if watcher.callback_url:
-            await _dispatch_callback(watcher.callback_url, payload)
+        for msg in messages:
+            h = _msg_hash(msg["text"])
+            if h in watcher.seen_hashes:
+                continue
+            watcher.seen_hashes.add(h)
+            parsed = find_watcher_for_message(msg["text"], [watcher])
+            if parsed:
+                _, body = parsed
+                entry = {
+                    "role": msg.get("role", "unknown"),
+                    "text": msg["text"],
+                    "body": body,
+                    "turn_id": msg.get("turn_id", ""),
+                    "ts": time.time(),
+                }
+                watcher.inbox.append(entry)
+                if len(watcher.inbox) > INBOX_MAX:
+                    watcher.inbox = watcher.inbox[-INBOX_MAX:]
+                log.info("Inbox[%s] ← [%s] %.60s…", watcher.alias, entry["role"], body)
 
 
 async def run_polling_loop(registry: WatcherRegistry, chrome_manager_factory) -> None:
     """Main loop: polls all registered watchers at their respective intervals."""
     next_poll: dict[str, float] = {}
+    active_tasks: dict[str, asyncio.Task] = {}
 
     while True:
         now = time.time()
+
+        # Clean up completed tasks
+        done = [wid for wid, t in active_tasks.items() if t.done()]
+        for wid in done:
+            del active_tasks[wid]
+
         for watcher in registry.all():
-            due = next_poll.get(watcher.id, 0)
+            wid = watcher.id
+            if wid in active_tasks:  # previous poll still in progress — skip
+                continue
+            due = next_poll.get(wid, 0)
             if now >= due:
-                asyncio.create_task(poll_watcher(watcher, chrome_manager_factory))
-                next_poll[watcher.id] = now + watcher.poll_interval()
+                task = asyncio.create_task(poll_watcher(watcher, chrome_manager_factory))
+                active_tasks[wid] = task
+                next_poll[wid] = now + watcher.poll_interval()
+
         await asyncio.sleep(1)
