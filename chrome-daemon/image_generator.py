@@ -19,7 +19,8 @@ _GENERATED_IMG_MIN_PX = 300
 
 
 def _is_generated_src(url: str) -> bool:
-    return "estuary" in url or "oaidall" in url
+    # Matches OpenAI CDN patterns: oaiusercontent, oaistatic, oaidall, estuary, prod-files.oai*
+    return any(p in url for p in ("oai", "estuary", "openai.com", "prod-files"))
 
 
 def _estuary_srcs(page) -> set[str]:
@@ -49,31 +50,51 @@ def _click_first_available(page, selectors: tuple, timeout_ms: int = 10_000) -> 
 def _attach_reference_image(page, reference_path: Path) -> None:
     """Upload a reference image to the ChatGPT input before typing the prompt.
 
-    ChatGPT's attach button opens a sub-menu ("Upload from computer" / "From computer").
-    We click the menu trigger, wait for the sub-menu item, then intercept the file chooser.
+    Tries three strategies in order:
+    1. Direct hidden file input (most reliable, bypasses UI changes).
+    2. Sub-menu from attach button (ChatGPT classic layout).
+    3. Direct file chooser intercept from attach button (fallback).
     """
+    # Strategy 1: set files directly on the hidden input — bypasses all UI
+    for sel in ('input[type="file"]', 'input[accept*="image"]'):
+        try:
+            fi = page.locator(sel).first
+            fi.wait_for(state="attached", timeout=2_000)
+            fi.set_input_files(str(reference_path))
+            page.wait_for_timeout(2_000)
+            log.info("Reference image attached via file input: %s", reference_path.name)
+            return
+        except Exception:
+            continue
+
     attach_trigger_selectors = (
         "button[aria-label='Add files and more']",
+        "button[aria-label='Attach files']",
         "button[aria-label*='attach' i]",
         "button[aria-label*='file' i]",
+        "button[aria-label*='Add' i]",
+        "[data-testid*='attach']",
     )
     upload_item_selectors = (
         "[role='menuitem']:has-text('computer')",
+        "[role='menuitem']:has-text('Upload')",
+        "[role='menuitem']:has-text('file')",
         "[role='option']:has-text('computer')",
         "li:has-text('Upload from computer')",
         "li:has-text('From computer')",
         "button:has-text('Upload from computer')",
         "button:has-text('From computer')",
+        "button:has-text('Upload')",
+        "div[role='menuitem']:has-text('computer')",
+        "div[role='menuitem']:has-text('Upload')",
     )
     try:
-        # Step 1: open the attach menu
+        # Strategy 2: open attach menu, find "Upload from computer" sub-menu item
         if not _click_first_available(page, attach_trigger_selectors, timeout_ms=5_000):
             log.warning("Reference image attach button not found — skipping.")
             return
         page.wait_for_timeout(500)
 
-        # Step 2: the menu may open a sub-menu — click "Upload from computer" if present,
-        # otherwise assume a file chooser was triggered directly.
         submenu_clicked = False
         for sel in upload_item_selectors:
             try:
@@ -88,15 +109,13 @@ def _attach_reference_image(page, reference_path: Path) -> None:
                 continue
 
         if not submenu_clicked:
-            # No sub-menu found — re-click the attach button with the file chooser
-            # interceptor already active. Some ChatGPT layouts skip the sub-menu
-            # and trigger the chooser directly from the button.
+            # Strategy 3: re-click attach button with file chooser interceptor active
             try:
                 with page.expect_file_chooser(timeout=8_000) as fc_info:
                     _click_first_available(page, attach_trigger_selectors, timeout_ms=5_000)
                 fc_info.value.set_files(str(reference_path))
             except Exception as exc:
-                log.warning("Reference image attach failed (direct): %s", exc)
+                log.warning("Reference image attach failed (all strategies): %s", exc)
                 return
 
         page.wait_for_timeout(3_000)
@@ -131,10 +150,12 @@ def _fill_and_send(page, full_prompt: str, reference_image_path: Path | None = N
             btn = page.locator(sel).last
             btn.wait_for(state="visible", timeout=5_000)
             btn.click()
+            log.info("Prompt sent (%.60s…)", full_prompt)
             return
         except Exception:
             continue
     page.keyboard.press("Enter")
+    log.info("Prompt sent via Enter key (%.60s…)", full_prompt)
 
 
 def _wait_for_done(page) -> None:
@@ -151,24 +172,47 @@ def _wait_for_done(page) -> None:
         except Exception:
             return False
 
+    log.info("Waiting for generation to start (stop button, up to 60s)…")
     deadline = time.time() + 60
     while time.time() < deadline and not any_stop():
         page.wait_for_timeout(5_000)
 
+    if not any_stop():
+        log.warning("Stop button never appeared — ChatGPT may not have started generating.")
+    else:
+        log.info("Generation started (stop button visible). Waiting up to %ds…", IMAGE_TIMEOUT_S)
+
+    last_log = time.time()
     deadline = time.time() + IMAGE_TIMEOUT_S
     while time.time() < deadline:
         if not any_stop():
             log.info("Image generation complete.")
             return
+        if time.time() - last_log >= 30:
+            elapsed = IMAGE_TIMEOUT_S - (deadline - time.time())
+            log.info("Still generating… %.0fs elapsed of %ds timeout.", elapsed, IMAGE_TIMEOUT_S)
+            last_log = time.time()
         page.wait_for_timeout(15_000)
     raise RuntimeError("ChatGPT não concluiu a geração dentro do tempo limite.")
 
 
 def _wait_for_new_image(page, before_srcs: set[str]) -> str:
+    log.info("_wait_for_new_image start — before_srcs count=%d", len(before_srcs))
     deadline = time.time() + IMAGE_TIMEOUT_S
+    iteration = 0
+    last_logged_srcs: set[str] = set()
     while time.time() < deadline:
+        iteration += 1
         all_imgs = page.locator("img")
-        count = all_imgs.count()
+        try:
+            count = all_imgs.count()
+        except Exception as exc:
+            log.warning("iter=%d img count failed: %s", iteration, exc)
+            page.wait_for_timeout(15_000)
+            continue
+
+        log.info("iter=%d page_url=%.80s img_count=%d", iteration, page.url, count)
+
         for i in range(count - 1, -1, -1):
             try:
                 img = all_imgs.nth(i)
@@ -178,17 +222,27 @@ def _wait_for_new_image(page, before_srcs: set[str]) -> str:
                 )
                 src = info.get("src") or ""
                 cur = info.get("cur") or ""
-                if info.get("w", 0) < _GENERATED_IMG_MIN_PX or info.get("h", 0) < _GENERATED_IMG_MIN_PX:
+                w, h = info.get("w", 0), info.get("h", 0)
+                key = src or cur
+                if w < _GENERATED_IMG_MIN_PX or h < _GENERATED_IMG_MIN_PX:
                     continue
                 if not (_is_generated_src(src) or _is_generated_src(cur)):
+                    if key and key not in last_logged_srcs:
+                        log.info("large-no-cdn %dx%d — %.120s", w, h, key)
+                        last_logged_srcs.add(key)
                     continue
                 if src in before_srcs or cur in before_srcs:
+                    if key not in last_logged_srcs:
+                        log.info("large-in-before %dx%d — %.120s", w, h, key)
+                        last_logged_srcs.add(key)
                     continue
+                log.info("candidate found %dx%d — %.120s", w, h, key)
                 img.scroll_into_view_if_needed()
                 img.click()
                 page.wait_for_timeout(8_000)
                 return src or cur
-            except Exception:
+            except Exception as exc:
+                log.warning("iter=%d img[%d] error: %s", iteration, i, exc)
                 continue
         page.wait_for_timeout(15_000)
     raise RuntimeError("Nenhuma imagem nova apareceu dentro do tempo limite.")
@@ -256,7 +310,26 @@ def generate_image(
     log.info("Generating image: %.80s", full_prompt)
 
     with ChromeManager(cdp_url=cdp_url) as mgr:
-        page = mgr.get_or_open_page(gpt_url)
+        # Close stale chatgpt pages to avoid accumulation (URL changes after navigate).
+        ctx = mgr.context
+        for p in list(ctx.pages):
+            try:
+                if "chatgpt.com" in p.url:
+                    p.close()
+            except Exception:
+                pass
+
+        # Always navigate fresh to the GPT URL so the correct GPT context loads.
+        page = ctx.new_page()
+        page.goto(gpt_url, wait_until="domcontentloaded", timeout=60_000)
+        # Wait for the input box to be ready (GPT fully loaded).
+        for sel in ("textarea", "div[contenteditable='true']", "[role='textbox']"):
+            try:
+                page.locator(sel).last.wait_for(state="visible", timeout=20_000)
+                break
+            except Exception:
+                continue
+        log.info("GPT page loaded: %s", page.url)
 
         before_srcs = _estuary_srcs(page)
         log.info("Existing images in page: %d", len(before_srcs))

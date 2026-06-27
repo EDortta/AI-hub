@@ -21,6 +21,10 @@ DAEMON_URL = os.environ.get("AI_HUB_URL", "http://127.0.0.1:9400")
 DEFAULT_TIMEOUT = 30
 
 
+class SessionExpiredError(RuntimeError):
+    """Raised when the daemon reports that the ChatGPT session has expired."""
+
+
 class AIHubClient:
     def __init__(self, daemon_url: str = DAEMON_URL, project_path: str = ""):
         self.daemon_url = daemon_url.rstrip("/")
@@ -35,7 +39,20 @@ class AIHubClient:
     def _post(self, path: str, json: dict, timeout: int = DEFAULT_TIMEOUT) -> dict:
         with httpx.Client(timeout=timeout) as c:
             r = c.post(f"{self.daemon_url}{path}", json=json)
-            r.raise_for_status()
+            if not r.is_success:
+                detail = ""
+                try:
+                    detail = r.json().get("detail", "")
+                except Exception:
+                    pass
+                if r.status_code == 401 and detail == "chatgpt_session_expired":
+                    raise SessionExpiredError(
+                        "ChatGPT session expired. Use hub.open_login() to re-authenticate."
+                    )
+                msg = f"HTTP {r.status_code} from {path}"
+                if detail:
+                    msg += f": {detail}"
+                raise RuntimeError(msg)
             return r.json()
 
     def _delete(self, path: str) -> dict:
@@ -53,6 +70,22 @@ class AIHubClient:
             return True
         except Exception:
             return False
+
+    def check_session(self, gpt_url: str = "") -> bool:
+        """Return True if ChatGPT is logged in (forces a live check)."""
+        try:
+            result = self._get(f"/session/check?gpt_url={gpt_url}")
+            return bool(result.get("logged_in"))
+        except Exception:
+            return False
+
+    def open_login(self, display: str = ":0") -> None:
+        """Stop headless Chrome and open a visible window for manual login."""
+        self._post("/session/login", {"display": display}, timeout=60)
+
+    def confirm_login(self) -> None:
+        """Signal that login is done; restarts headless Chrome."""
+        self._post("/session/login-done", {}, timeout=60)
 
     def register_conversation(
         self,
@@ -124,10 +157,19 @@ class AIHubClient:
             "image_path": str(image_path),
             "caption": caption,
             "url": linkedin_url,
-        }, timeout=120)
+        }, timeout=300)
 
     def send_to_conversation(self, watcher_id: str, text: str) -> dict:
-        return self._post(f"/conversations/{watcher_id}/send", {"text": text})
+        return self._post(f"/conversations/{watcher_id}/send", {"text": text}, timeout=120)
+
+    def get_inbox(self, watcher_id: str) -> list[dict]:
+        """Return pending inbox messages addressed to this watcher's alias."""
+        result = self._get(f"/conversations/{watcher_id}/inbox")
+        return result.get("inbox", [])
+
+    def clear_inbox(self, watcher_id: str) -> dict:
+        """Clear all inbox messages for this watcher."""
+        return self._delete(f"/conversations/{watcher_id}/inbox")
 
     def get_last_message(self, watcher_id: str) -> dict | None:
         result = self._get(f"/conversations/{watcher_id}/last-message")

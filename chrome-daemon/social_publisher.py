@@ -133,25 +133,78 @@ def publish_to_linkedin(
             if not _click_first_available(page, start_post_selectors, timeout_ms=5_000):
                 raise RuntimeError("Could not find LinkedIn 'Start a post' button.")
 
-        add_media_btn = page.locator("button[aria-label='Add media'], button[aria-label='Adicionar mídia']").first
-        add_media_btn.wait_for(state="visible", timeout=30_000)
+        # Try to attach via hidden file input first (most reliable)
+        file_inputs = page.locator("input[type='file']")
+        used_file_input = False
+        if file_inputs.count() > 0:
+            try:
+                file_inputs.first.set_input_files(str(image_path))
+                used_file_input = True
+                log.info("LinkedIn image attached via direct file input.")
+            except Exception:
+                pass
 
-        with page.expect_file_chooser(timeout=15_000) as fc_info:
-            add_media_btn.click()
-        fc_info.value.set_files(str(image_path))
+        if not used_file_input:
+            add_media_selectors = (
+                "button[aria-label='Add media']",
+                "button[aria-label='Adicionar mídia']",
+                "button[aria-label='Add photo']",
+                "button[aria-label='Adicionar foto']",
+                "button[aria-label='Media']",
+                "button[aria-label='Mídia']",
+                "button[aria-label='Add a photo']",
+                "button[aria-label*='media' i]",
+                "button[aria-label*='photo' i]",
+                "button[aria-label*='mídia' i]",
+                "button[aria-label*='foto' i]",
+                "li-icon[type='image-medium']",
+            )
+            add_media_btn = None
+            for sel in add_media_selectors:
+                try:
+                    loc = page.locator(sel).first
+                    loc.wait_for(state="visible", timeout=5_000)
+                    add_media_btn = loc
+                    break
+                except Exception:
+                    continue
+
+            if add_media_btn is None:
+                raise RuntimeError(
+                    "Could not find LinkedIn Add media button. "
+                    "Selectors tried: " + ", ".join(add_media_selectors)
+                )
+
+            try:
+                with page.expect_file_chooser(timeout=15_000) as fc_info:
+                    add_media_btn.click()
+                fc_info.value.set_files(str(image_path))
+            except Exception:
+                # file chooser didn't appear — try clicking and setting via input
+                add_media_btn.click()
+                page.wait_for_timeout(2_000)
+                fi = page.locator("input[type='file']")
+                if fi.count() > 0:
+                    fi.first.set_input_files(str(image_path))
+                else:
+                    raise RuntimeError("LinkedIn media attach failed: file chooser timed out and no file input found.")
         page.wait_for_timeout(6_000)
 
-        done_selectors = (
+        # LinkedIn image editor may have multiple Next/Done steps — advance through all of them.
+        advance_selectors = (
+            "button:has-text('Next')", "button:has-text('Avançar')",
+            "button:has-text('Done')", "button:has-text('Concluído')",
+            "button:has-text('Save')", "button:has-text('Salvar')",
+            "button:has-text('Apply')", "button:has-text('Confirm')",
             "button[aria-label='Done']", "button[aria-label='Save']",
             "button[aria-label='Concluído']", "button[aria-label='Salvar']",
-            "button:has-text('Done')", "button:has-text('Save')",
-            "button:has-text('Apply')", "button:has-text('Next')",
-            "button:has-text('Confirm')", "button:has-text('Concluído')",
-            "button:has-text('Salvar')", "button:has-text('Avançar')",
             "button.share-creation-state__done", "button[data-testid='done-button']",
         )
-        if _click_first_available(page, done_selectors, timeout_ms=10_000):
-            page.wait_for_timeout(3_000)
+        for _ in range(4):  # advance through up to 4 editor steps
+            if _click_first_available(page, advance_selectors, timeout_ms=3_000):
+                page.wait_for_timeout(2_000)
+            else:
+                break
 
         typed = False
         editor_selectors = (

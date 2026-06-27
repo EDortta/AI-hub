@@ -1,23 +1,30 @@
 """Alias-based message router.
 
 Routes ChatGPT messages to the correct watcher based on the alias prefix.
-Convention: "Claudia, faça X" → routes to the watcher with alias "claudia".
+Conventions supported:
+  "Beatriz, faça X"          → alias=beatriz
+  "Hey, Beatriz, faça X"     → alias=beatriz  (greeting stripped)
+  "Hei, Beatriz, faça X"     → alias=beatriz  (greeting stripped)
+  "Hey Beatriz, faça X"      → alias=beatriz  (greeting without comma)
 """
 from __future__ import annotations
 
 import re
 
+# Strips optional greeting "Hey[,] " or "Hei[,] " from the start
+_GREET_RE = re.compile(r"^(?:hey|hei)[,\s]+", re.IGNORECASE)
 _PREFIX_RE = re.compile(r"^([\w][\w\s]{0,20}?),\s*(.+)", re.DOTALL)
 
 
 def extract_alias_and_text(message: str) -> tuple[str, str] | None:
-    """Returns (alias, text) if message starts with 'Alias, ...', else None."""
-    m = _PREFIX_RE.match(message.strip())
+    """Returns (alias, body) if message starts with '[Hey, ]Alias, ...', else None."""
+    text = _GREET_RE.sub("", message.strip())
+    m = _PREFIX_RE.match(text)
     if not m:
         return None
     alias = m.group(1).strip()
-    text = m.group(2).strip()
-    return alias, text
+    body = m.group(2).strip()
+    return alias, body
 
 
 def find_watcher_for_message(message: str, watchers: list) -> tuple | None:

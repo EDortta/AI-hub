@@ -112,6 +112,29 @@ def cmd_send(args) -> int:
     return 0
 
 
+def cmd_inbox(args) -> int:
+    client = _client()
+    if not client.is_alive():
+        print(f"ERROR: ai-hub daemon not reachable at {DAEMON_URL}.", file=sys.stderr)
+        return 1
+    w = _find_watcher_by_alias(client, args.alias)
+    if w is None:
+        print(f"ERROR: no registered watcher with alias {args.alias!r}.", file=sys.stderr)
+        return 1
+    inbox = client.get_inbox(w["id"])
+    if not inbox:
+        print("(inbox empty)")
+        return 0
+    for entry in inbox:
+        role = entry.get("role", "?")
+        body = entry.get("body") or entry.get("text", "")
+        print(f"[{role}] {body}")
+    if args.clear:
+        client.clear_inbox(w["id"])
+        print(f"\n({len(inbox)} message(s) cleared)")
+    return 0
+
+
 def cmd_read(args) -> int:
     client = _client()
     if not client.is_alive():
@@ -156,11 +179,15 @@ def main() -> int:
     sub.add_parser("logs", help="Tail daemon logs via journalctl")
 
     p_send = sub.add_parser("send", help="Send a message to a registered conversation by alias")
-    p_send.add_argument("alias", help="Watcher alias (e.g. Claudia)")
+    p_send.add_argument("alias", help="Watcher alias (e.g. Beatriz)")
     p_send.add_argument("text", help="Message text to send")
 
+    p_inbox = sub.add_parser("inbox", help="Show messages addressed to this alias in the conversation")
+    p_inbox.add_argument("alias", help="Watcher alias (e.g. Beatriz)")
+    p_inbox.add_argument("--clear", action="store_true", help="Clear inbox after reading")
+
     p_read = sub.add_parser("read", help="Print the last assistant message from a conversation")
-    p_read.add_argument("alias", help="Watcher alias (e.g. Claudia)")
+    p_read.add_argument("alias", help="Watcher alias (e.g. Beatriz)")
 
     p_gen = sub.add_parser("generate-image", help="Generate an image")
     p_gen.add_argument("gpt_url", help="ChatGPT GPT URL")
@@ -177,6 +204,7 @@ def main() -> int:
         "setup": cmd_setup,
         "logs": cmd_logs,
         "send": cmd_send,
+        "inbox": cmd_inbox,
         "read": cmd_read,
         "generate-image": cmd_generate_image,
     }

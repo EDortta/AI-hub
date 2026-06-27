@@ -11,7 +11,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import re
+import signal
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -20,7 +22,17 @@ from typing import Any
 
 import httpx
 
-from chrome_manager import ChromeManager, playwright_executor, run_playwright_async
+from chrome_manager import (
+    CDP_URL,
+    CHROME_PROFILE,
+    XVFB_DISPLAY,
+    ChromeManager,
+    ensure_xvfb,
+    is_cdp_available,
+    launch_chrome,
+    playwright_executor,
+    run_playwright_async,
+)
 from router import find_watcher_for_message
 
 log = logging.getLogger("ai-hub.watchers")
@@ -298,6 +310,11 @@ def _sync_fetch_messages(url: str) -> list[dict]:
 
 async def poll_watcher(watcher: ConversationWatcher, chrome_manager_factory) -> None:
     """Single poll cycle for one watcher. Uses sync playwright in a fresh thread."""
+    loop = asyncio.get_event_loop()
+    cdp_ok = await loop.run_in_executor(None, is_cdp_available)
+    if not cdp_ok:
+        return  # Chrome is down; watchdog handles recovery — don't leak playwright FDs
+
     try:
         messages = await run_playwright_async(
             lambda: _sync_fetch_messages(watcher.url),
@@ -371,6 +388,191 @@ async def poll_watcher(watcher: ConversationWatcher, chrome_manager_factory) -> 
                 if len(watcher.inbox) > INBOX_MAX:
                     watcher.inbox = watcher.inbox[-INBOX_MAX:]
                 log.info("Inbox[%s] ← [%s] %.60s…", watcher.alias, entry["role"], body)
+
+
+_CHROME_DOWN_THRESHOLD = 3    # consecutive failures before restart attempt
+_CHROME_RELAUNCH_MAX = 5      # max relaunch attempts before giving up and dying
+_CHROME_CHECK_INTERVAL = 30   # seconds between CDP health checks
+_CHROME_CPU_LIMIT = 60.0      # % — combined CPU threshold to trigger stale-Chrome inspection
+_CHROME_PROC_CPU_MIN = 10.0   # % — individual process must exceed this to be considered runaway
+_CHROME_PROC_AGE_MIN = 300    # seconds — process must be older than this to be killed (5 min)
+
+
+def _chrome_snapshot() -> "list[tuple]":
+    """Return [(psutil.Process, cpu_percent)] for all Chrome processes.
+
+    Uses a two-sample measurement (0.5 s apart) to get a meaningful per-process
+    CPU reading instead of the always-zero first-call value.
+    """
+    try:
+        import psutil
+    except ImportError:
+        return []
+    attrs = ["pid", "name", "create_time"]
+    procs = [p for p in psutil.process_iter(attrs) if "chrome" in (p.info["name"] or "").lower()]
+    if not procs:
+        return []
+    for p in procs:
+        try:
+            p.cpu_percent(interval=None)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    time.sleep(0.5)
+    result = []
+    for p in procs:
+        try:
+            result.append((p, p.cpu_percent(interval=None)))
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    return result
+
+
+def _chrome_cpu_total() -> float:
+    """Return the combined CPU % of all running Chrome processes."""
+    return sum(cpu for _, cpu in _chrome_snapshot())
+
+
+def _kill_stale_chrome() -> int:
+    """Kill only Chrome processes that are hidden, old, and individually CPU-heavy.
+
+    A process is killed only when ALL three conditions hold:
+      1. Hidden — DISPLAY is not ':0' (running on Xvfb or no display, not the user's screen).
+      2. Old    — running for more than _CHROME_PROC_AGE_MIN seconds (5 min).
+      3. Hot    — individual CPU% > _CHROME_PROC_CPU_MIN (actually consuming resources).
+
+    The daemon's own tracked Chrome process (_chrome_process in chrome_manager) is
+    always spared regardless of the above criteria.
+    """
+    try:
+        import psutil
+        import chrome_manager as _cm
+    except ImportError:
+        return 0
+
+    protected_pid: int | None = None
+    proc = getattr(_cm, "_chrome_process", None)
+    if proc is not None and proc.poll() is None:
+        protected_pid = proc.pid
+
+    now = time.time()
+    killed = 0
+    for p, cpu in _chrome_snapshot():
+        try:
+            if p.pid == protected_pid:
+                log.debug("Chrome watchdog: sparing managed Chrome pid=%d (cpu=%.1f%%)", p.pid, cpu)
+                continue
+
+            age = now - p.info["create_time"]
+            if age < _CHROME_PROC_AGE_MIN:
+                log.debug("Chrome watchdog: skipping young Chrome pid=%d age=%.0fs", p.pid, age)
+                continue
+
+            if cpu < _CHROME_PROC_CPU_MIN:
+                log.debug("Chrome watchdog: skipping low-CPU Chrome pid=%d cpu=%.1f%%", p.pid, cpu)
+                continue
+
+            try:
+                display = p.environ().get("DISPLAY", "")
+            except (psutil.AccessDenied, psutil.NoSuchProcess):
+                display = ""
+            if display == ":0":
+                log.debug("Chrome watchdog: skipping visible Chrome pid=%d (DISPLAY=:0)", p.pid)
+                continue
+
+            log.warning(
+                "Chrome watchdog: killing stale Chrome pid=%d age=%.0fs cpu=%.1f%% display=%r",
+                p.pid, age, cpu, display,
+            )
+            os.kill(p.pid, signal.SIGKILL)
+            killed += 1
+        except (psutil.NoSuchProcess, psutil.AccessDenied, ProcessLookupError, PermissionError):
+            pass
+    return killed
+
+
+async def run_chrome_watchdog(
+    cdp_url: str = CDP_URL,
+    profile_dir=CHROME_PROFILE,
+    xvfb_display: str = XVFB_DISPLAY,
+) -> None:
+    """Periodically checks CDP availability and relaunches Chrome when it's down.
+
+    After _CHROME_RELAUNCH_MAX failed relaunches the daemon kills itself so
+    systemd can restart it cleanly — prevents file-descriptor exhaustion from
+    repeated subprocess.Popen calls when Chrome is permanently down.
+    """
+    import os
+    import signal
+
+    consecutive_failures = 0
+    relaunch_attempts = 0
+    loop = asyncio.get_event_loop()
+
+    while True:
+        await asyncio.sleep(_CHROME_CHECK_INTERVAL)
+
+        # CPU guard: if combined Chrome CPU exceeds the limit, kill stale hidden processes.
+        # The daemon's own Chrome and any visible (:0) Chrome are always preserved.
+        cpu = await loop.run_in_executor(None, _chrome_cpu_total)
+        if cpu > _CHROME_CPU_LIMIT:
+            log.warning(
+                "Chrome watchdog: combined Chrome CPU %.1f%% > %.0f%% — scanning for stale processes.",
+                cpu, _CHROME_CPU_LIMIT,
+            )
+            killed = await loop.run_in_executor(None, _kill_stale_chrome)
+            if killed:
+                log.warning("Chrome watchdog: killed %d stale Chrome process(es).", killed)
+            else:
+                log.info("Chrome watchdog: no stale processes found (all are managed, visible, young, or low-CPU).")
+        else:
+            if cpu > 0:
+                log.debug("Chrome watchdog: combined Chrome CPU %.1f%%", cpu)
+
+        available = await loop.run_in_executor(None, lambda: is_cdp_available(cdp_url))
+        if available:
+            if consecutive_failures > 0:
+                log.info("Chrome watchdog: CDP back online.")
+            consecutive_failures = 0
+            relaunch_attempts = 0
+            continue
+
+        consecutive_failures += 1
+        log.warning(
+            "Chrome watchdog: CDP unavailable (failure %d/%d).",
+            consecutive_failures,
+            _CHROME_DOWN_THRESHOLD,
+        )
+
+        if consecutive_failures < _CHROME_DOWN_THRESHOLD:
+            continue
+
+        if relaunch_attempts >= _CHROME_RELAUNCH_MAX:
+            log.error(
+                "Chrome watchdog: %d relaunch attempts failed — killing daemon so systemd can restart cleanly.",
+                relaunch_attempts,
+            )
+            os.kill(os.getpid(), signal.SIGTERM)
+            return
+
+        relaunch_attempts += 1
+        log.warning("Chrome watchdog: attempting relaunch #%d...", relaunch_attempts)
+        try:
+            display = await loop.run_in_executor(None, lambda: ensure_xvfb(xvfb_display))
+            await loop.run_in_executor(
+                None,
+                lambda: launch_chrome(profile_dir=profile_dir, display=display, cdp_url=cdp_url),
+            )
+            log.info("Chrome watchdog: relaunch triggered — waiting 15s to verify.")
+            await asyncio.sleep(15)
+            ok = await loop.run_in_executor(None, lambda: is_cdp_available(cdp_url))
+            if ok:
+                log.info("Chrome watchdog: Chrome is back up.")
+                consecutive_failures = 0
+                relaunch_attempts = 0
+            else:
+                log.error("Chrome watchdog: Chrome still not available after relaunch #%d.", relaunch_attempts)
+        except Exception as exc:
+            log.error("Chrome watchdog: relaunch #%d failed: %s", relaunch_attempts, exc)
 
 
 async def run_polling_loop(registry: WatcherRegistry, chrome_manager_factory) -> None:
