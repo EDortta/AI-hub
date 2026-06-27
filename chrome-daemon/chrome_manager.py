@@ -10,6 +10,7 @@ import concurrent.futures
 import contextlib
 import os
 import shutil
+import signal
 import subprocess
 import time
 import urllib.request
@@ -22,28 +23,46 @@ CHROME_PROFILE = Path.home() / ".local" / "share" / "ai-hub" / "chrome-profile"
 
 _SINGLETON_FILES = ("SingletonCookie", "SingletonLock", "SingletonSocket")
 
+# Tracked Chrome subprocess (set by launch_chrome).
+_chrome_process: subprocess.Popen | None = None
+
+# Session cache: avoids a Playwright round-trip before every operation.
+_session_cache: dict = {"ok": None, "checked_at": 0.0}
+_SESSION_CACHE_TTL = 300  # 5 minutes
+
 # Executor dedicado para chamadas Playwright (sync API).
-# O initializer garante que cada thread deste pool não tenha event loop asyncio,
-# evitando o erro "Playwright Sync API inside asyncio loop".
+# max_workers=8 suporta até 8 watchers simultâneos sem serializar.
+# Cada thread limpa o running-loop no finally de _run_playwright_fn — veja abaixo.
 playwright_executor = concurrent.futures.ThreadPoolExecutor(
-    initializer=lambda: asyncio.set_event_loop(None),
+    max_workers=8,
     thread_name_prefix="playwright",
 )
 
 
 async def run_playwright_async(fn, timeout: int = 700):
-    """Run a sync playwright callable in a brand-new thread.
+    """Run a sync playwright callable in a thread from the global executor.
 
-    ThreadPoolExecutor reuses threads. Playwright 1.x calls
-    asyncio._set_running_loop() at the end of every sync operation, leaving
-    stale running-loop state on the thread. The next sync_playwright() call
-    on that same thread sees a non-None running loop → 'Sync API inside asyncio
-    loop' error. A one-shot executor creates a fresh thread every time,
-    avoiding the stale state entirely.
+    Playwright 1.x calls asyncio._set_running_loop() during sync operation,
+    leaving stale running-loop state on the thread. We clear it in a finally
+    block so the reused thread is clean for the next call, avoiding the
+    'Sync API inside asyncio loop' error without spawning a new process each time.
     """
     loop = asyncio.get_event_loop()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as exe:
-        return await loop.run_in_executor(exe, fn)
+
+    def _wrapped():
+        try:
+            return fn()
+        finally:
+            # Clear stale running-loop state set by Playwright's sync API.
+            # asyncio._set_running_loop is private but stable since Python 3.7
+            # and is the exact mechanism Playwright uses — set_event_loop() alone
+            # does not fix this.
+            try:
+                asyncio._set_running_loop(None)  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
+    return await loop.run_in_executor(playwright_executor, _wrapped)
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +178,10 @@ def launch_chrome(
         "--disable-gpu",
         "--window-size=1280,1024",
         f"--remote-debugging-port={port}",
+        # Anti-detection: hides automation traces that trigger Cloudflare Turnstile
+        "--disable-blink-features=AutomationControlled",
+        "--exclude-switches=enable-automation",
+        "--disable-automation",
     ]
 
     env = os.environ.copy()
@@ -173,7 +196,8 @@ def launch_chrome(
         env["DISPLAY"] = display
         print(f"[chrome] Chrome em display={display} — aguardando CDP em {cdp_url}...")
 
-    subprocess.Popen(
+    global _chrome_process
+    _chrome_process = subprocess.Popen(
         args,
         start_new_session=True,
         stdout=subprocess.DEVNULL,
@@ -193,10 +217,102 @@ def launch_chrome(
 def launch_visible_chrome(
     profile_dir: Path = CHROME_PROFILE,
     cdp_url: str = CDP_URL,
+    display: str = "",
 ) -> None:
     """Lança Chrome no display real (para login manual)."""
-    real_display = os.environ.get("DISPLAY", ":0")
+    real_display = display or os.environ.get("DISPLAY", ":0")
     launch_chrome(profile_dir=profile_dir, display=real_display, cdp_url=cdp_url)
+
+
+# ---------------------------------------------------------------------------
+# Chrome kill + session check
+# ---------------------------------------------------------------------------
+
+def kill_chrome(profile_dir: Path = CHROME_PROFILE) -> None:
+    """Terminate the running Chrome process and clean up singleton files.
+
+    Tries the tracked _chrome_process first, falls back to the PID in
+    SingletonLock, then removes the lock files so a new instance can start.
+    """
+    global _chrome_process
+    _log = __import__("logging").getLogger("ai-hub.chrome")
+
+    pid: int | None = None
+
+    if _chrome_process is not None and _chrome_process.poll() is None:
+        pid = _chrome_process.pid
+        _chrome_process.terminate()
+        try:
+            _chrome_process.wait(timeout=6)
+        except subprocess.TimeoutExpired:
+            _chrome_process.kill()
+            _chrome_process.wait(timeout=3)
+        _chrome_process = None
+    else:
+        lock_pid = _singleton_pid(profile_dir)
+        if lock_pid is not None and _pid_alive(lock_pid):
+            pid = lock_pid
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(pid, signal.SIGTERM)
+            deadline = time.time() + 8
+            while time.time() < deadline and _pid_alive(pid):
+                time.sleep(0.3)
+            if _pid_alive(pid):
+                with contextlib.suppress(ProcessLookupError):
+                    os.kill(pid, signal.SIGKILL)
+            time.sleep(0.3)
+
+    for name in _SINGLETON_FILES:
+        with contextlib.suppress(FileNotFoundError):
+            (profile_dir / name).unlink()
+
+    if pid:
+        _log.info("Killed Chrome (pid=%s).", pid)
+    else:
+        _log.info("kill_chrome: no running Chrome found.")
+
+
+def _check_chatgpt_session_live(cdp_url: str, gpt_url: str) -> bool:
+    """Make an authenticated request to ChatGPT's session API using browser cookies."""
+    try:
+        with ChromeManager(cdp_url=cdp_url) as mgr:
+            page = mgr.get_or_open_page(gpt_url or "https://chatgpt.com")
+            resp = page.context.request.get(
+                "https://chatgpt.com/api/auth/session",
+                timeout=10_000,
+            )
+            if not resp.ok:
+                return False
+            data = resp.json()
+            return bool(data.get("user") or data.get("accessToken"))
+    except Exception as exc:
+        __import__("logging").getLogger("ai-hub.chrome").warning(
+            "Session check failed: %s", exc
+        )
+        return False
+
+
+def check_chatgpt_session(cdp_url: str = CDP_URL, gpt_url: str = "") -> bool:
+    """Return True if ChatGPT is logged in. Result is cached for _SESSION_CACHE_TTL seconds."""
+    now = time.time()
+    if (
+        _session_cache["ok"] is not None
+        and (now - _session_cache["checked_at"]) < _SESSION_CACHE_TTL
+    ):
+        return bool(_session_cache["ok"])
+    result = _check_chatgpt_session_live(cdp_url, gpt_url)
+    _session_cache["ok"] = result
+    _session_cache["checked_at"] = now
+    __import__("logging").getLogger("ai-hub.chrome").info(
+        "Session check: logged_in=%s", result
+    )
+    return result
+
+
+def invalidate_session_cache() -> None:
+    """Force the next check_chatgpt_session() call to hit the live page."""
+    _session_cache["ok"] = None
+    _session_cache["checked_at"] = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -214,17 +330,33 @@ class ChromeManager:
     def __enter__(self):
         from playwright.sync_api import sync_playwright
         self._playwright = sync_playwright().__enter__()
-        self._browser = self._playwright.chromium.connect_over_cdp(self._cdp_url)
+        try:
+            self._browser = self._playwright.chromium.connect_over_cdp(self._cdp_url)
+        except Exception:
+            # Clean up the playwright Node driver so its pipes don't leak when
+            # Chrome is down and connect_over_cdp raises ECONNREFUSED.
+            with contextlib.suppress(Exception):
+                self._playwright.__exit__(None, None, None)
+            self._playwright = None
+            raise
         return self
 
     def __exit__(self, *_):
         with contextlib.suppress(Exception):
-            self._playwright.__exit__(None, None, None)
+            if self._playwright is not None:
+                self._playwright.__exit__(None, None, None)
 
     @property
     def context(self):
         ctxs = self._browser.contexts
-        return ctxs[0] if ctxs else self._browser.new_context()
+        if ctxs:
+            ctx = ctxs[0]
+        else:
+            ctx = self._browser.new_context()
+        # Patch navigator.webdriver so Cloudflare Turnstile doesn't block headless Chrome.
+        with contextlib.suppress(Exception):
+            ctx.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        return ctx
 
     def find_page(self, url_contains: str):
         for page in self.context.pages:
@@ -322,6 +454,8 @@ class AsyncChromeManager:
         ctx = self.context
         if ctx is None:
             ctx = await self._browser.new_context()
+        with contextlib.suppress(Exception):
+            await ctx.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         return ctx
 
     async def find_page(self, url_contains: str):

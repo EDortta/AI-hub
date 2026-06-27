@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import logging.handlers
 import os
+import signal
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -31,44 +33,91 @@ from chrome_manager import (
     CHROME_PROFILE,
     XVFB_DISPLAY,
     ChromeManager,
+    check_chatgpt_session,
     ensure_xvfb,
+    invalidate_session_cache,
     is_cdp_available,
+    kill_chrome,
     launch_chrome,
     launch_visible_chrome,
     playwright_executor,
     run_playwright_async,
 )
-from watchers import ConversationWatcher, WatcherRegistry, WatcherState, run_polling_loop
+from watchers import ConversationWatcher, WatcherRegistry, WatcherState, run_chrome_watchdog, run_polling_loop
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+_LOG_DIR = Path.home() / ".local" / "share" / "ai-hub"
+_LOG_DIR.mkdir(parents=True, exist_ok=True)
+_LOG_FILE = _LOG_DIR / "ai-hub.log"
+
+_fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
+_file_handler = logging.handlers.RotatingFileHandler(
+    _LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
 )
+_file_handler.setFormatter(_fmt)
+
+_stream_handler = logging.StreamHandler()
+_stream_handler.setFormatter(_fmt)
+
+logging.basicConfig(level=logging.INFO, handlers=[_stream_handler, _file_handler])
 log = logging.getLogger("ai-hub.main")
+
+
+def _reap_children(signum, frame):
+    """Collect zombie children so they don't accumulate in the process table."""
+    while True:
+        try:
+            pid, _ = os.waitpid(-1, os.WNOHANG)
+            if pid == 0:
+                break
+            log.debug("Reaped child PID %d.", pid)
+        except ChildProcessError:
+            break
+
+
+signal.signal(signal.SIGCHLD, _reap_children)
 
 DAEMON_PORT = int(os.environ.get("AI_HUB_PORT", "9400"))
 
 registry = WatcherRegistry()
+
+# ---------------------------------------------------------------------------
+# Session state
+# ---------------------------------------------------------------------------
+
+_login_in_progress: bool = False
+# Semaphore initialized in lifespan (must bind to the running event loop).
+_chrome_op_sem: asyncio.Semaphore | None = None
 
 
 def _chrome_manager_factory():
     return ChromeManager(cdp_url=CDP_URL)
 
 
+def _require_not_login_in_progress() -> None:
+    if _login_in_progress:
+        raise HTTPException(status_code=503, detail="login_in_progress")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _chrome_op_sem
+    _chrome_op_sem = asyncio.Semaphore(1)
+
     # Startup: ensure Xvfb and Chrome
     display = ensure_xvfb(XVFB_DISPLAY)
     launch_chrome(profile_dir=CHROME_PROFILE, display=display, cdp_url=CDP_URL)
     log.info("Chrome ready at %s", CDP_URL)
 
-    # Start polling loop in background
+    # Start polling loop and Chrome watchdog in background
     task = asyncio.create_task(run_polling_loop(registry, _chrome_manager_factory))
-    log.info("Polling loop started.")
+    watchdog = asyncio.create_task(run_chrome_watchdog())
+    log.info("Polling loop and Chrome watchdog started.")
 
     yield
 
     task.cancel()
+    watchdog.cancel()
     log.info("AI-Hub daemon stopped.")
 
 
@@ -81,25 +130,108 @@ app = FastAPI(title="AI-Hub Chrome Daemon", version="1.0.0", lifespan=lifespan)
 
 @app.get("/status")
 async def status():
+    from chrome_manager import _session_cache
     return {
         "ok": True,
         "chrome_cdp_available": is_cdp_available(CDP_URL),
         "cdp_url": CDP_URL,
         "watchers": len(registry.all()),
         "display": os.environ.get("DISPLAY", XVFB_DISPLAY),
+        "login_in_progress": _login_in_progress,
+        "chatgpt_logged_in": _session_cache.get("ok"),
     }
 
 
 # ---------------------------------------------------------------------------
-# Setup (show Chrome for manual login)
+# Session management
 # ---------------------------------------------------------------------------
 
+@app.get("/session/check")
+async def session_check(gpt_url: str = ""):
+    """Check if ChatGPT is logged in. Forces a live check (bypasses cache)."""
+    invalidate_session_cache()
+    logged_in = await run_playwright_async(
+        lambda: check_chatgpt_session(CDP_URL, gpt_url), timeout=30
+    )
+    return {"logged_in": logged_in}
+
+
+class LoginRequest(BaseModel):
+    display: str = ":0"
+
+
+@app.post("/session/login")
+async def session_login(req: LoginRequest):
+    """Stop headless Chrome and open a visible window for manual ChatGPT login.
+
+    Call POST /session/login-done when the user has finished logging in.
+    """
+    global _login_in_progress
+    if _login_in_progress:
+        raise HTTPException(status_code=409, detail="Login already in progress.")
+    if _chrome_op_sem is None:
+        raise HTTPException(status_code=503, detail="Daemon not fully started.")
+
+    # Wait for any active generation/publish to complete (up to 30s).
+    try:
+        await asyncio.wait_for(_chrome_op_sem.acquire(), timeout=30)
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=503,
+            detail="Timed out waiting for active operation to finish.",
+        )
+
+    _login_in_progress = True
+    loop = asyncio.get_event_loop()
+    try:
+        await loop.run_in_executor(None, lambda: kill_chrome(CHROME_PROFILE))
+        await asyncio.sleep(1)
+        # Launch Chrome on the user's real display (not Xvfb).
+        await loop.run_in_executor(
+            None,
+            lambda: launch_visible_chrome(CHROME_PROFILE, CDP_URL, req.display),
+        )
+        log.info("Visible Chrome opened on display=%s for login.", req.display)
+    except Exception as exc:
+        _login_in_progress = False
+        _chrome_op_sem.release()
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    # Semaphore stays acquired until /session/login-done releases it.
+    return {"ok": True, "message": f"Chrome aberto em display={req.display}. Faça login e chame POST /session/login-done."}
+
+
+@app.post("/session/login-done")
+async def session_login_done():
+    """Close the visible Chrome and restart headless. Call after manual login."""
+    global _login_in_progress
+    if not _login_in_progress:
+        raise HTTPException(status_code=400, detail="No login in progress.")
+
+    loop = asyncio.get_event_loop()
+    try:
+        await loop.run_in_executor(None, lambda: kill_chrome(CHROME_PROFILE))
+        await asyncio.sleep(1)
+        display = await loop.run_in_executor(None, lambda: ensure_xvfb(XVFB_DISPLAY))
+        await loop.run_in_executor(
+            None,
+            lambda: launch_chrome(profile_dir=CHROME_PROFILE, display=display, cdp_url=CDP_URL),
+        )
+        invalidate_session_cache()
+        log.info("Headless Chrome restarted after login.")
+    finally:
+        _login_in_progress = False
+        if _chrome_op_sem is not None:
+            _chrome_op_sem.release()
+
+    return {"ok": True, "message": "Headless Chrome reiniciado. Sessão pronta."}
+
+
+# Legacy alias kept for backwards compatibility.
 @app.get("/setup")
 async def setup():
-    """Launch Chrome visibly so the user can log in to ChatGPT."""
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(playwright_executor, launch_visible_chrome)
-    return {"ok": True, "message": "Chrome aberto no display real para login manual."}
+    """Deprecated — use POST /session/login instead."""
+    return {"ok": False, "message": "Use POST /session/login (display param) instead of /setup."}
 
 
 # ---------------------------------------------------------------------------
@@ -251,24 +383,37 @@ class ImageRequest(BaseModel):
 async def generate_image(req: ImageRequest):
     from image_generator import DEFAULT_OUTPUT_DIR, generate_image as _gen
 
+    _require_not_login_in_progress()
+    if _chrome_op_sem is None:
+        raise HTTPException(status_code=503, detail="Daemon not fully started.")
+
     output_dir = Path(req.output_dir).expanduser() if req.output_dir else DEFAULT_OUTPUT_DIR
     ref_path = Path(req.reference_image_path).expanduser() if req.reference_image_path else None
 
-    try:
-        image_path = await run_playwright_async(
-            lambda: _gen(
-                gpt_url=req.gpt_url,
-                prompt=req.prompt,
-                orientation=req.orientation,
-                output_dir=output_dir,
-                greeting=req.greeting,
-                cdp_url=CDP_URL,
-                reference_image_path=ref_path,
-            ),
-            timeout=700,
+    async with _chrome_op_sem:
+        # Session check (uses TTL cache — no overhead on repeated calls).
+        logged_in = await run_playwright_async(
+            lambda: check_chatgpt_session(CDP_URL, req.gpt_url), timeout=30
         )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        if not logged_in:
+            log.warning("generate_image blocked: ChatGPT session expired.")
+            raise HTTPException(status_code=401, detail="chatgpt_session_expired")
+
+        try:
+            image_path = await run_playwright_async(
+                lambda: _gen(
+                    gpt_url=req.gpt_url,
+                    prompt=req.prompt,
+                    orientation=req.orientation,
+                    output_dir=output_dir,
+                    greeting=req.greeting,
+                    cdp_url=CDP_URL,
+                    reference_image_path=ref_path,
+                ),
+                timeout=700,
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
 
     return {"ok": True, "image_path": str(image_path)}
 
@@ -287,6 +432,7 @@ class PublishSocialRequest(BaseModel):
 async def publish_to_x(req: PublishSocialRequest):
     from social_publisher import publish_to_x as _pub
 
+    _require_not_login_in_progress()
     image_path = Path(req.image_path).expanduser()
     if not image_path.exists():
         raise HTTPException(status_code=400, detail=f"Image not found: {image_path}")
@@ -306,6 +452,7 @@ async def publish_to_x(req: PublishSocialRequest):
 async def publish_to_linkedin(req: PublishSocialRequest):
     from social_publisher import publish_to_linkedin as _pub
 
+    _require_not_login_in_progress()
     image_path = Path(req.image_path).expanduser()
     if not image_path.exists():
         raise HTTPException(status_code=400, detail=f"Image not found: {image_path}")
