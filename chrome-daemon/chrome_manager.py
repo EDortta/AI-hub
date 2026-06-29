@@ -182,6 +182,14 @@ def launch_chrome(
         "--disable-blink-features=AutomationControlled",
         "--exclude-switches=enable-automation",
         "--disable-automation",
+        # Keep the on-device "optimization guide" LLM (Gemini Nano, ~2.7 GB) out
+        # of this automation profile: it never benefits a headless ChatGPT bridge
+        # and its background compute destabilized the CDP connection (high CPU →
+        # watchdog kills → send/last-message timeouts). Disable the features and
+        # stop the component downloader from refetching the model.
+        "--disable-features=OptimizationGuideOnDeviceModel,OptimizationGuideModelDownloading,"
+        "OptimizationHints,TextSafetyClassifier,OnDeviceHeadSuggest",
+        "--disable-component-update",
     ]
 
     env = os.environ.copy()
