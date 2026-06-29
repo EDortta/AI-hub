@@ -5,7 +5,8 @@ Usage (run from inside the project dir):
     ai-hub register      # reads .ai-hub.yml and registers with daemon
     ai-hub unregister    # removes this project's watchers
     ai-hub status        # shows daemon status + active watchers
-    ai-hub setup         # opens Chrome for manual ChatGPT login
+    ai-hub setup         # opens visible Chrome for manual ChatGPT/X login
+    ai-hub login-done    # closes the visible Chrome and resumes headless
     ai-hub logs          # tail daemon log (if journald)
     ai-hub send <alias> <text>   # send message to the conversation registered under <alias>
     ai-hub read <alias>          # print last assistant message from that conversation
@@ -78,8 +79,22 @@ def cmd_status(args) -> int:
 
 def cmd_setup(args) -> int:
     client = _client()
-    result = client._get("/setup")
-    print(result.get("message", "Done."))
+    if not client.is_alive():
+        print(f"ERROR: ai-hub daemon not reachable at {DAEMON_URL}. Is it running?", file=sys.stderr)
+        return 1
+    client.open_login(args.display)
+    print(f"Chrome aberto em display={args.display}. Faça login no ChatGPT/X e depois rode:")
+    print("  ai-hub login-done")
+    return 0
+
+
+def cmd_login_done(args) -> int:
+    client = _client()
+    if not client.is_alive():
+        print(f"ERROR: ai-hub daemon not reachable at {DAEMON_URL}.", file=sys.stderr)
+        return 1
+    client.confirm_login()
+    print("Login confirmado. Chrome headless retomado.")
     return 0
 
 
@@ -175,7 +190,9 @@ def main() -> int:
     sub.add_parser("register", help="Register this project with ai-hub (reads .ai-hub.yml)")
     sub.add_parser("unregister", help="Remove this project's watchers")
     sub.add_parser("status", help="Show daemon status and active watchers")
-    sub.add_parser("setup", help="Open Chrome for manual ChatGPT login")
+    p_setup = sub.add_parser("setup", help="Open visible Chrome for manual ChatGPT/X login")
+    p_setup.add_argument("--display", default=":0", help="X display for the visible Chrome (default :0)")
+    sub.add_parser("login-done", help="Close visible Chrome and resume headless after login")
     sub.add_parser("logs", help="Tail daemon logs via journalctl")
 
     p_send = sub.add_parser("send", help="Send a message to a registered conversation by alias")
@@ -202,6 +219,7 @@ def main() -> int:
         "unregister": cmd_unregister,
         "status": cmd_status,
         "setup": cmd_setup,
+        "login-done": cmd_login_done,
         "logs": cmd_logs,
         "send": cmd_send,
         "inbox": cmd_inbox,
