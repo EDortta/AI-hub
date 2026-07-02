@@ -129,16 +129,27 @@ def _fill_and_send(page, full_prompt: str, reference_image_path: Path | None = N
         _attach_reference_image(page, reference_image_path)
 
     selectors = ("textarea", "div[contenteditable='true']", "[role='textbox']")
+    composer = None
     for sel in selectors:
         loc = page.locator(sel).last
         try:
             loc.wait_for(state="visible", timeout=10_000)
+            # Focus the composer before filling so the send button / Enter key
+            # bind to THIS GPT's conversation and don't drop the prompt (issue 002).
+            try:
+                loc.click()
+            except Exception:
+                pass
             loc.fill(full_prompt)
+            composer = loc
             break
         except Exception:
             continue
-    else:
+    if composer is None:
         raise RuntimeError("Campo de texto do ChatGPT não encontrado.")
+
+    # Small settle so ChatGPT enables the send button after the fill.
+    page.wait_for_timeout(400)
 
     send_selectors = (
         "button[data-testid='send-button']",
@@ -154,6 +165,11 @@ def _fill_and_send(page, full_prompt: str, reference_image_path: Path | None = N
             return
         except Exception:
             continue
+    # Fallback: refocus the composer and press Enter so the keystroke lands there.
+    try:
+        composer.click()
+    except Exception:
+        pass
     page.keyboard.press("Enter")
     log.info("Prompt sent via Enter key (%.60s…)", full_prompt)
 
@@ -175,12 +191,25 @@ def _wait_for_done(page) -> None:
     log.info("Waiting for generation to start (stop button, up to 60s)…")
     deadline = time.time() + 60
     while time.time() < deadline and not any_stop():
-        page.wait_for_timeout(5_000)
+        page.wait_for_timeout(2_000)
 
     if not any_stop():
-        log.warning("Stop button never appeared — ChatGPT may not have started generating.")
-    else:
-        log.info("Generation started (stop button visible). Waiting up to %ds…", IMAGE_TIMEOUT_S)
+        # Generation never started. Fail fast with a clear error instead of
+        # polling ~600s in _wait_for_new_image for an image that will never
+        # appear (issue 002). A bare chatgpt.com/ (or chat.openai.com/) URL means
+        # the GPT context was lost when the prompt was sent.
+        cur = (page.url or "")
+        base = cur.split("?")[0].rstrip("/")
+        if base in ("https://chatgpt.com", "https://chat.openai.com"):
+            raise RuntimeError(
+                "generation_did_not_start: page reverted to ChatGPT home — "
+                f"GPT context lost on send (url={cur!r})."
+            )
+        raise RuntimeError(
+            f"generation_did_not_start: stop button never appeared (url={cur!r})."
+        )
+
+    log.info("Generation started (stop button visible). Waiting up to %ds…", IMAGE_TIMEOUT_S)
 
     last_log = time.time()
     deadline = time.time() + IMAGE_TIMEOUT_S
@@ -286,6 +315,55 @@ def _download_image(page, src: str, output_path: Path) -> None:
         output_path.write_bytes(raw)
 
 
+def delete_current_chat(page) -> bool:
+    """Best-effort delete of the currently-open ChatGPT conversation.
+
+    Opens the conversation options menu, clicks Delete, and confirms. The
+    ChatGPT UI changes often, so every step is best-effort: on any failure we
+    log and return False WITHOUT raising, so a delete never sinks a successful
+    generation (issue 003).
+    """
+    menu_selectors = (
+        "button[data-testid='conversation-options-button']",
+        "button[aria-label*='options' i]",
+        "button[aria-label*='opções' i]",
+        "[data-testid='conversation-turn'] button[aria-label*='More' i]",
+        "button[aria-label*='More' i]",
+    )
+    delete_item_selectors = (
+        "[role='menuitem']:has-text('Delete')",
+        "[role='menuitem']:has-text('Excluir')",
+        "[role='menuitem']:has-text('Apagar')",
+        "div[role='menuitem']:has-text('Delete')",
+        "button:has-text('Delete chat')",
+    )
+    confirm_selectors = (
+        "button[data-testid='delete-conversation-confirm-button']",
+        "button:has-text('Delete')",
+        "button:has-text('Excluir')",
+        "button:has-text('Confirm')",
+        "[role='dialog'] button:has-text('Delete')",
+    )
+    try:
+        if not _click_first_available(page, menu_selectors, timeout_ms=5_000):
+            log.warning("delete_current_chat: options menu not found — skipping.")
+            return False
+        page.wait_for_timeout(500)
+        if not _click_first_available(page, delete_item_selectors, timeout_ms=4_000):
+            log.warning("delete_current_chat: Delete item not found — skipping.")
+            return False
+        page.wait_for_timeout(500)
+        if not _click_first_available(page, confirm_selectors, timeout_ms=4_000):
+            log.warning("delete_current_chat: confirm button not found — skipping.")
+            return False
+        page.wait_for_timeout(1_500)
+        log.info("delete_current_chat: conversation deleted.")
+        return True
+    except Exception as exc:
+        log.warning("delete_current_chat failed (best-effort): %s", exc)
+        return False
+
+
 def generate_image(
     gpt_url: str,
     prompt: str,
@@ -294,6 +372,7 @@ def generate_image(
     greeting: str = "Hey, ",
     cdp_url: str = "http://127.0.0.1:9222",
     reference_image_path: Path | None = None,
+    delete_chat: bool = False,
 ) -> Path:
     """Sends prompt to a ChatGPT image GPT and saves the generated image.
 
@@ -339,6 +418,11 @@ def generate_image(
 
         new_src = _wait_for_new_image(page, before_srcs)
         _download_image(page, new_src, output_path)
+
+        # Best-effort: remove the chat from history after the image is safely
+        # downloaded, so tests/automation don't leave orphan conversations (issue 003).
+        if delete_chat:
+            delete_current_chat(page)
 
     log.info("Image saved: %s", output_path)
     return output_path

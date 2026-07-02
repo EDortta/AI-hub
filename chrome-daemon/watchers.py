@@ -27,6 +27,7 @@ from chrome_manager import (
     CHROME_PROFILE,
     XVFB_DISPLAY,
     ChromeManager,
+    chrome_op_in_flight,
     ensure_xvfb,
     is_cdp_available,
     launch_chrome,
@@ -513,7 +514,16 @@ async def run_chrome_watchdog(
 
         # CPU guard: if combined Chrome CPU exceeds the limit, kill stale hidden processes.
         # The daemon's own Chrome and any visible (:0) Chrome are always preserved.
-        cpu = await loop.run_in_executor(None, _chrome_cpu_total)
+        #
+        # Skip the whole scan while a long operation (image generation, publish) is
+        # in flight: high CPU then means "busy", not "stale". Killing Chrome — or a
+        # renderer child — mid-generation closes the Playwright driver and produces a
+        # 500. See AI-hub issue 001.
+        if chrome_op_in_flight():
+            log.debug("Chrome watchdog: operation in flight — skipping stale-process scan.")
+            cpu = 0.0
+        else:
+            cpu = await loop.run_in_executor(None, _chrome_cpu_total)
         if cpu > _CHROME_CPU_LIMIT:
             log.warning(
                 "Chrome watchdog: combined Chrome CPU %.1f%% > %.0f%% — scanning for stale processes.",

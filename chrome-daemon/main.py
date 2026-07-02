@@ -36,6 +36,8 @@ from chrome_manager import (
     check_chatgpt_session,
     ensure_xvfb,
     invalidate_session_cache,
+    mark_chrome_op_end,
+    mark_chrome_op_start,
     is_cdp_available,
     kill_chrome,
     launch_chrome,
@@ -366,6 +368,73 @@ async def debug_screenshot(url_contains: str = "chatgpt"):
     return {"ok": True, "saved": str(out)}
 
 
+@app.post("/browse")
+async def browse(url: str, wait_ms: int = 3000):
+    """Navega para uma URL usando o ChromeManager compartilhado e retorna screenshot em base64."""
+    import base64
+    from pathlib import Path as _Path
+
+    out = _Path.home() / ".local" / "share" / "ai-hub" / "browse-screenshot.png"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out_str = str(out)
+    wait_sec = wait_ms / 1000
+
+    def _do_browse(cdp_url: str):
+        with ChromeManager(cdp_url=cdp_url) as mgr:
+            page = mgr.context.new_page()
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                page.wait_for_timeout(wait_ms)
+                page.screenshot(path=out_str, full_page=False)
+                title = page.title()
+                content = page.evaluate(
+                    "Array.from(document.querySelectorAll('a[href],button'))"
+                    ".map(e=>(e.innerText||'').trim()+'-->'+(e.href||''))"
+                    ".filter(t=>t.length>3&&t.length<150).slice(0,40).join('|')"
+                )
+                return {"title": title, "content": content}
+            finally:
+                page.close()
+
+    result = await run_playwright_async(lambda: _do_browse(CDP_URL), timeout=40)
+    img_b64 = base64.b64encode(out.read_bytes()).decode()
+    return {"ok": True, "title": result["title"], "elements": result["content"],
+            "screenshot_b64": img_b64, "saved": out_str}
+
+
+@app.post("/page/action")
+async def page_action(url: str, action: str, selector: str = "", value: str = "", wait_ms: int = 2000):
+    """Executa ação numa página aberta: click, type, evaluate."""
+    async with AsyncChromeManager(cdp_url=CDP_URL) as mgr:
+        ctx = mgr.context
+        if ctx is None:
+            raise HTTPException(status_code=503, detail="No browser context")
+        pages = ctx.pages
+        page = next((p for p in pages if url in (p.url or "")), None)
+        if page is None:
+            raise HTTPException(status_code=404, detail=f"Página não encontrada: {url}")
+
+        if action == "click":
+            await page.click(selector)
+        elif action == "type":
+            await page.fill(selector, value)
+        elif action == "evaluate":
+            result = await page.evaluate(selector)
+            return {"ok": True, "result": result}
+        elif action == "screenshot":
+            import base64
+            from pathlib import Path as _Path
+            out = _Path.home() / ".local" / "share" / "ai-hub" / "action-screenshot.png"
+            await page.screenshot(path=str(out))
+            img_b64 = base64.b64encode(out.read_bytes()).decode()
+            return {"ok": True, "screenshot_b64": img_b64}
+
+        await page.wait_for_timeout(wait_ms)
+        title = await page.title()
+        cur_url = page.url
+        return {"ok": True, "title": title, "url": cur_url}
+
+
 # ---------------------------------------------------------------------------
 # Image generation
 # ---------------------------------------------------------------------------
@@ -377,6 +446,7 @@ class ImageRequest(BaseModel):
     output_dir: str = ""
     greeting: str = "Hey, "
     reference_image_path: str = ""
+    delete_chat: bool = False
 
 
 @app.post("/image/generate")
@@ -391,31 +461,72 @@ async def generate_image(req: ImageRequest):
     ref_path = Path(req.reference_image_path).expanduser() if req.reference_image_path else None
 
     async with _chrome_op_sem:
-        # Session check (uses TTL cache — no overhead on repeated calls).
-        logged_in = await run_playwright_async(
-            lambda: check_chatgpt_session(CDP_URL, req.gpt_url), timeout=30
-        )
-        if not logged_in:
-            log.warning("generate_image blocked: ChatGPT session expired.")
-            raise HTTPException(status_code=401, detail="chatgpt_session_expired")
-
+        # Mark the operation in-flight so the Chrome watchdog does not treat the
+        # high CPU of a legitimate generation as "stale" and kill Chrome. See issue 001.
+        mark_chrome_op_start()
         try:
-            image_path = await run_playwright_async(
-                lambda: _gen(
-                    gpt_url=req.gpt_url,
-                    prompt=req.prompt,
-                    orientation=req.orientation,
-                    output_dir=output_dir,
-                    greeting=req.greeting,
-                    cdp_url=CDP_URL,
-                    reference_image_path=ref_path,
-                ),
-                timeout=700,
+            # Session check (uses TTL cache — no overhead on repeated calls).
+            logged_in = await run_playwright_async(
+                lambda: check_chatgpt_session(CDP_URL, req.gpt_url), timeout=30
             )
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            if not logged_in:
+                log.warning("generate_image blocked: ChatGPT session expired.")
+                raise HTTPException(status_code=401, detail="chatgpt_session_expired")
+
+            try:
+                image_path = await run_playwright_async(
+                    lambda: _gen(
+                        gpt_url=req.gpt_url,
+                        prompt=req.prompt,
+                        orientation=req.orientation,
+                        output_dir=output_dir,
+                        greeting=req.greeting,
+                        cdp_url=CDP_URL,
+                        reference_image_path=ref_path,
+                        delete_chat=req.delete_chat,
+                    ),
+                    timeout=700,
+                )
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=str(e))
+        finally:
+            mark_chrome_op_end()
 
     return {"ok": True, "image_path": str(image_path)}
+
+
+class DeleteChatRequest(BaseModel):
+    url: str
+
+
+@app.post("/page/delete-chat")
+async def delete_chat(req: DeleteChatRequest):
+    """Best-effort delete of the ChatGPT conversation open at the given URL.
+
+    Idempotent and non-fatal: returns {"ok": True, "deleted": false} if the UI
+    action could not be performed (issue 003).
+    """
+    from image_generator import delete_current_chat
+
+    _require_not_login_in_progress()
+    if _chrome_op_sem is None:
+        raise HTTPException(status_code=503, detail="Daemon not fully started.")
+
+    def _do_delete(cdp_url: str) -> bool:
+        with ChromeManager(cdp_url=cdp_url) as mgr:
+            page = mgr.get_or_open_page(req.url)
+            return delete_current_chat(page)
+
+    async with _chrome_op_sem:
+        mark_chrome_op_start()
+        try:
+            deleted = await run_playwright_async(lambda: _do_delete(CDP_URL), timeout=60)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+        finally:
+            mark_chrome_op_end()
+
+    return {"ok": True, "deleted": bool(deleted)}
 
 
 # ---------------------------------------------------------------------------
@@ -437,6 +548,7 @@ async def publish_to_x(req: PublishSocialRequest):
     if not image_path.exists():
         raise HTTPException(status_code=400, detail=f"Image not found: {image_path}")
 
+    mark_chrome_op_start()
     try:
         await run_playwright_async(
             lambda: _pub(image_path, req.caption, req.url, CDP_URL),
@@ -444,6 +556,8 @@ async def publish_to_x(req: PublishSocialRequest):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        mark_chrome_op_end()
 
     return {"ok": True}
 
@@ -457,6 +571,7 @@ async def publish_to_linkedin(req: PublishSocialRequest):
     if not image_path.exists():
         raise HTTPException(status_code=400, detail=f"Image not found: {image_path}")
 
+    mark_chrome_op_start()
     try:
         await run_playwright_async(
             lambda: _pub(image_path, req.caption, req.url, CDP_URL),
@@ -465,6 +580,8 @@ async def publish_to_linkedin(req: PublishSocialRequest):
     except Exception as e:
         log.error("publish_to_linkedin failed: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        mark_chrome_op_end()
 
     return {"ok": True}
 

@@ -12,6 +12,7 @@ import os
 import shutil
 import signal
 import subprocess
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -25,6 +26,47 @@ _SINGLETON_FILES = ("SingletonCookie", "SingletonLock", "SingletonSocket")
 
 # Tracked Chrome subprocess (set by launch_chrome).
 _chrome_process: subprocess.Popen | None = None
+
+# In-flight guard: how many long Chrome operations (image generation, social
+# publish) are currently running. The watchdog must NOT kill Chrome while any
+# operation is active — high CPU during image generation means "busy", not
+# "stale". Without this guard the watchdog's CPU/age heuristic can SIGKILL a
+# legitimately-working Chrome (or one of its renderer children), closing the
+# Playwright driver mid-generation and producing the "Connection closed while
+# reading from the driver" 500. See AI-hub issue 001.
+_chrome_op_inflight = 0
+_chrome_op_inflight_lock = threading.Lock()
+
+
+def mark_chrome_op_start() -> None:
+    """Register the start of a long Chrome operation (see chrome_op_in_flight)."""
+    global _chrome_op_inflight
+    with _chrome_op_inflight_lock:
+        _chrome_op_inflight += 1
+
+
+def mark_chrome_op_end() -> None:
+    """Register the end of a long Chrome operation. Never goes below zero."""
+    global _chrome_op_inflight
+    with _chrome_op_inflight_lock:
+        if _chrome_op_inflight > 0:
+            _chrome_op_inflight -= 1
+
+
+def chrome_op_in_flight() -> bool:
+    """True while any long Chrome operation is running; the watchdog checks this."""
+    with _chrome_op_inflight_lock:
+        return _chrome_op_inflight > 0
+
+
+@contextlib.contextmanager
+def chrome_op_guard():
+    """Context manager marking a long Chrome operation as in-flight."""
+    mark_chrome_op_start()
+    try:
+        yield
+    finally:
+        mark_chrome_op_end()
 
 # Session cache: avoids a Playwright round-trip before every operation.
 _session_cache: dict = {"ok": None, "checked_at": 0.0}
