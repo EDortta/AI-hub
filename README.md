@@ -24,6 +24,26 @@ ai-hub setup    # opens Chrome visibly so you can log into ChatGPT
 
 `install.sh` also runs `loginctl enable-linger` so the daemon survives logout.
 
+### Authentication (required)
+
+The daemon drives a Chrome logged into your accounts, so every endpoint requires
+a shared token. Set `AIHUB_DAEMON_TOKEN` in the environment of **both** the daemon
+and any client (the same value):
+
+```bash
+export AIHUB_DAEMON_TOKEN="$(openssl rand -hex 32)"   # generate once, keep secret
+```
+
+- The daemon reads the token from `AIHUB_DAEMON_TOKEN` and rejects every request
+  that lacks a matching `Authorization: Bearer <token>` header with `401`.
+- **Fail-closed:** if `AIHUB_DAEMON_TOKEN` is unset/empty, the daemon logs a
+  critical warning and answers every request with `503` — it never runs
+  unauthenticated.
+- The daemon also binds to loopback (`127.0.0.1`) and validates the `Host` header
+  to block DNS-rebinding. Never hardcode the token; keep it out of version control
+  (e.g. put the `export` line in the systemd unit's `Environment=`/`EnvironmentFile=`,
+  not in the repo).
+
 ## Project registration
 
 Create `.ai-hub.yml` in your project root:

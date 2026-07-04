@@ -19,8 +19,10 @@ import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import hmac
+
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -79,6 +81,56 @@ signal.signal(signal.SIGCHLD, _reap_children)
 
 DAEMON_PORT = int(os.environ.get("AI_HUB_PORT", "9400"))
 
+# ---------------------------------------------------------------------------
+# Authentication (SEC-0001)
+#
+# The daemon drives a Chrome instance logged into the user's accounts and can
+# execute privileged actions on their behalf. Binding to loopback is not a
+# sufficient control on its own (a hostile local process, or a browser page via
+# DNS-rebinding, could reach it). Every request must therefore carry a shared
+# secret token.
+#
+# The token is read from the AIHUB_DAEMON_TOKEN environment variable and is
+# NEVER hardcoded. Fail-closed: if the variable is unset/empty, all requests are
+# rejected so the daemon never runs unauthenticated.
+# ---------------------------------------------------------------------------
+DAEMON_TOKEN = os.environ.get("AIHUB_DAEMON_TOKEN", "").strip()
+
+# Hostnames accepted in the Host header. Anything else is treated as a possible
+# DNS-rebinding attempt and rejected.
+_ALLOWED_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
+
+
+def _host_allowed(host_header: str | None) -> bool:
+    if not host_header:
+        # No Host header at all is only produced by non-browser clients; allow.
+        return True
+    host = host_header.split(":", 1)[0].strip().lower()
+    return host in _ALLOWED_HOSTS
+
+
+async def require_auth(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> None:
+    """FastAPI dependency enforcing shared-token auth on every endpoint."""
+    # DNS-rebinding guard: reject unexpected Host headers.
+    if not _host_allowed(request.headers.get("host")):
+        raise HTTPException(status_code=403, detail="host_not_allowed")
+
+    if not DAEMON_TOKEN:
+        # Fail closed: refuse to serve when no token is configured.
+        raise HTTPException(status_code=503, detail="daemon_token_not_configured")
+
+    supplied = ""
+    if authorization:
+        parts = authorization.split(None, 1)
+        supplied = parts[1].strip() if len(parts) == 2 and parts[0].lower() == "bearer" else authorization.strip()
+
+    if not supplied or not hmac.compare_digest(supplied, DAEMON_TOKEN):
+        raise HTTPException(status_code=401, detail="invalid_or_missing_token")
+
+
 registry = WatcherRegistry()
 
 # ---------------------------------------------------------------------------
@@ -104,6 +156,15 @@ async def lifespan(app: FastAPI):
     global _chrome_op_sem
     _chrome_op_sem = asyncio.Semaphore(1)
 
+    # SEC-0001: fail-closed auth. Without a token every request is rejected.
+    if not DAEMON_TOKEN:
+        log.critical(
+            "AIHUB_DAEMON_TOKEN is not set — all endpoints will reject requests "
+            "with 503. Export AIHUB_DAEMON_TOKEN to enable the daemon."
+        )
+    else:
+        log.info("Daemon auth enabled (shared token via AIHUB_DAEMON_TOKEN).")
+
     # Startup: ensure Xvfb and Chrome
     display = ensure_xvfb(XVFB_DISPLAY)
     launch_chrome(profile_dir=CHROME_PROFILE, display=display, cdp_url=CDP_URL)
@@ -121,7 +182,13 @@ async def lifespan(app: FastAPI):
     log.info("AI-Hub daemon stopped.")
 
 
-app = FastAPI(title="AI-Hub Chrome Daemon", version="1.0.0", lifespan=lifespan)
+app = FastAPI(
+    title="AI-Hub Chrome Daemon",
+    version="1.0.0",
+    lifespan=lifespan,
+    # SEC-0001: enforce shared-token auth (+ Host guard) on every endpoint.
+    dependencies=[Depends(require_auth)],
+)
 
 
 # ---------------------------------------------------------------------------

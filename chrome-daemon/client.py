@@ -20,6 +20,14 @@ import yaml
 DAEMON_URL = os.environ.get("AI_HUB_URL", "http://127.0.0.1:9400")
 DEFAULT_TIMEOUT = 30
 
+# SEC-0001: shared token sent as a Bearer header on every request. Read from the
+# environment; never hardcode. The daemon rejects requests without it (401).
+DAEMON_TOKEN = os.environ.get("AIHUB_DAEMON_TOKEN", "").strip()
+
+
+def _auth_headers() -> dict:
+    return {"Authorization": f"Bearer {DAEMON_TOKEN}"} if DAEMON_TOKEN else {}
+
 
 class SessionExpiredError(RuntimeError):
     """Raised when the daemon reports that the ChatGPT session has expired."""
@@ -31,14 +39,15 @@ class AIHubClient:
         self.project_path = project_path or str(Path.cwd())
 
     def _get(self, path: str, **kwargs) -> dict:
+        headers = {**_auth_headers(), **kwargs.pop("headers", {})}
         with httpx.Client(timeout=DEFAULT_TIMEOUT) as c:
-            r = c.get(f"{self.daemon_url}{path}", **kwargs)
+            r = c.get(f"{self.daemon_url}{path}", headers=headers, **kwargs)
             r.raise_for_status()
             return r.json()
 
     def _post(self, path: str, json: dict, timeout: int = DEFAULT_TIMEOUT) -> dict:
         with httpx.Client(timeout=timeout) as c:
-            r = c.post(f"{self.daemon_url}{path}", json=json)
+            r = c.post(f"{self.daemon_url}{path}", json=json, headers=_auth_headers())
             if not r.is_success:
                 detail = ""
                 try:
@@ -57,7 +66,7 @@ class AIHubClient:
 
     def _delete(self, path: str) -> dict:
         with httpx.Client(timeout=DEFAULT_TIMEOUT) as c:
-            r = c.delete(f"{self.daemon_url}{path}")
+            r = c.delete(f"{self.daemon_url}{path}", headers=_auth_headers())
             r.raise_for_status()
             return r.json()
 
