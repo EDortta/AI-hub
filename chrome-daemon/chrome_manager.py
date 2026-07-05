@@ -182,6 +182,13 @@ def launch_chrome(
         "--disable-gpu",
         "--window-size=1280,1024",
         f"--remote-debugging-port={port}",
+        # SEC-0036: reject CDP WebSocket handshakes that carry an Origin header
+        # (i.e. any browser page trying to reach the debugger via DNS-rebinding).
+        # Non-browser clients (Playwright, this daemon's own raw-CDP scripts using
+        # suppress_origin=True) don't send Origin and are unaffected. This does
+        # NOT stop another local process/user on this host from connecting
+        # directly — that threat model is documented in CDP-ACCESS.md.
+        "--remote-allow-origins=",
         # Anti-detection: hides automation traces that trigger Cloudflare Turnstile
         "--disable-blink-features=AutomationControlled",
         "--exclude-switches=enable-automation",

@@ -44,3 +44,28 @@ Google Calendar: abrir
 a URL sai de `/eventedit` e volta para `/calendar/u/0/r`.
 
 Script de referência usado: ver histórico da sessão (scratchpad `cal_cdp.py`).
+
+## ⚠️ Modelo de ameaça do CDP (SEC-0036)
+
+O protocolo CDP não tem autenticação própria: quem alcança `127.0.0.1:9222`
+controla o Chrome inteiro (cookies, JS, abas) do perfil autenticado. Duas
+camadas de contenção existem hoje, e uma limitação que **permanece**:
+
+- **Bind em loopback** — a porta só é alcançável por processos no mesmo host
+  (não é exposta na rede).
+- **`--remote-allow-origins=`** (explícito em `chrome_manager.py`) — o Chrome
+  rejeita handshakes de WebSocket que carreguem header `Origin`, ou seja,
+  qualquer página web tentando alcançar o CDP via DNS-rebinding é barrada com
+  `403 Forbidden`. É por isso que scripts de CDP cru (receita acima) precisam
+  de `suppress_origin=True`: eles não são páginas web, então não têm Origin a
+  suprimir de verdade, mas o parâmetro evita que o client injete um.
+- **Limitação que fica:** qualquer outro processo local (outro usuário do
+  mesmo host, ou qualquer programa rodando como o mesmo usuário) que não seja
+  uma página de browser ainda consegue conectar sem Origin e assumir o
+  controle total — o bind em loopback não distingue processos "amigos" de
+  "hostis" no mesmo host. Mitigar isso de verdade exigiria trocar
+  `--remote-debugging-port` por `--remote-debugging-pipe` (CDP via pipe, sem
+  socket TCP) — mudança arquitetural maior, fora do escopo deste lote de
+  correções. Até lá: **não rode este daemon em host multiusuário**, e trate
+  qualquer processo capaz de rodar como este usuário como equivalente a ter
+  acesso total às contas logadas no Chrome do daemon.
