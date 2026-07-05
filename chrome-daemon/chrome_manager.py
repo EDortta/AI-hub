@@ -173,7 +173,11 @@ def launch_chrome(
         f"--user-data-dir={profile_dir}",
         "--profile-directory=Default",
         "--no-first-run",
-        "--no-sandbox",
+        # SEC-0107: no --no-sandbox — this host has unprivileged user namespaces
+        # enabled (confirmed: Chrome's renderer sandbox works fine without it),
+        # so the flag only widened the blast radius of a renderer exploit against
+        # this daemon's Chrome (which renders GPT/social pages under an
+        # authenticated profile).
         "--disable-dev-shm-usage",
         "--disable-gpu",
         "--window-size=1280,1024",
