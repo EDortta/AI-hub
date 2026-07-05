@@ -131,6 +131,34 @@ async def require_auth(
         raise HTTPException(status_code=401, detail="invalid_or_missing_token")
 
 
+# ---------------------------------------------------------------------------
+# Path confinement (SEC-0108)
+#
+# reference_image_path / image_path / output_dir are caller-controlled and are
+# either read and uploaded to an external site (ChatGPT/X/LinkedIn) or written
+# to. Without confinement a caller could point at any user-readable file (e.g.
+# ~/.ssh/id_rsa) for exfiltration, or write output anywhere on disk. Every path
+# is resolved and rejected unless it falls under one of the allowed base dirs.
+# ---------------------------------------------------------------------------
+_DEFAULT_ALLOWED_PATHS = (
+    Path.home() / ".local" / "share" / "ai-hub",
+    Path.home() / "Sync" / "Projects",
+)
+_ALLOWED_BASE_PATHS = [
+    Path(p).expanduser().resolve()
+    for p in os.environ.get("AIHUB_ALLOWED_PATHS", "").split(":")
+    if p.strip()
+] or [p.resolve() for p in _DEFAULT_ALLOWED_PATHS]
+
+
+def _confine_path(raw: str, *, field: str) -> Path:
+    """Resolve `raw` and reject it if outside the allowed base directories."""
+    candidate = Path(raw).expanduser().resolve(strict=False)
+    if not any(candidate == base or candidate.is_relative_to(base) for base in _ALLOWED_BASE_PATHS):
+        raise HTTPException(status_code=400, detail=f"{field}_outside_allowed_paths")
+    return candidate
+
+
 registry = WatcherRegistry()
 
 # ---------------------------------------------------------------------------
@@ -454,8 +482,10 @@ async def generate_image(req: ImageRequest):
     if _chrome_op_sem is None:
         raise HTTPException(status_code=503, detail="Daemon not fully started.")
 
-    output_dir = Path(req.output_dir).expanduser() if req.output_dir else DEFAULT_OUTPUT_DIR
-    ref_path = Path(req.reference_image_path).expanduser() if req.reference_image_path else None
+    output_dir = _confine_path(req.output_dir, field="output_dir") if req.output_dir else DEFAULT_OUTPUT_DIR
+    ref_path = _confine_path(req.reference_image_path, field="reference_image_path") if req.reference_image_path else None
+    if ref_path is not None and not ref_path.is_file():
+        raise HTTPException(status_code=400, detail=f"reference_image_path not found: {ref_path}")
 
     async with _chrome_op_sem:
         # Session check (uses TTL cache — no overhead on repeated calls).
@@ -500,7 +530,7 @@ async def publish_to_x(req: PublishSocialRequest):
     from social_publisher import publish_to_x as _pub
 
     _require_not_login_in_progress()
-    image_path = Path(req.image_path).expanduser()
+    image_path = _confine_path(req.image_path, field="image_path")
     if not image_path.exists():
         raise HTTPException(status_code=400, detail=f"Image not found: {image_path}")
 
@@ -520,7 +550,7 @@ async def publish_to_linkedin(req: PublishSocialRequest):
     from social_publisher import publish_to_linkedin as _pub
 
     _require_not_login_in_progress()
-    image_path = Path(req.image_path).expanduser()
+    image_path = _confine_path(req.image_path, field="image_path")
     if not image_path.exists():
         raise HTTPException(status_code=400, detail=f"Image not found: {image_path}")
 
