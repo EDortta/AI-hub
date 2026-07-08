@@ -100,7 +100,17 @@ DAEMON_TOKEN = os.environ.get("AIHUB_DAEMON_TOKEN", "").strip()
 
 # Hostnames accepted in the Host header. Anything else is treated as a possible
 # DNS-rebinding attempt and rejected.
-_ALLOWED_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
+_DEFAULT_ALLOWED_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
+# 004-03: a reverse proxy fronting the daemon (e.g. nginx on the VM at /api-hub/)
+# sends its own Host header. Allow extra names via AIHUB_ALLOWED_HOSTS
+# (comma-separated) instead of hardcoding — empty/unset keeps the localhost-only
+# default (backward compatible), so this never widens exposure by accident.
+_EXTRA_ALLOWED_HOSTS = {
+    h.strip().lower()
+    for h in os.environ.get("AIHUB_ALLOWED_HOSTS", "").split(",")
+    if h.strip()
+}
+_ALLOWED_HOSTS = _DEFAULT_ALLOWED_HOSTS | _EXTRA_ALLOWED_HOSTS
 
 
 def _host_allowed(host_header: str | None) -> bool:
