@@ -19,7 +19,9 @@ chmod +x "$DAEMON_DIR/cli.py"
 
 echo "==> Installing systemd user service..."
 mkdir -p "$HOME/.config/systemd/user"
-cp "$SERVICE_SRC" "$SERVICE_DST"
+# ExecStart is rewritten from DAEMON_DIR so the unit follows the repo wherever it
+# is checked out, instead of baking in the path this file happened to ship with.
+sed "s|^ExecStart=.*|ExecStart=$DAEMON_DIR/main.py|" "$SERVICE_SRC" > "$SERVICE_DST"
 systemctl --user daemon-reload
 systemctl --user enable chrome-daemon.service
 systemctl --user start chrome-daemon.service
@@ -27,7 +29,7 @@ systemctl --user start chrome-daemon.service
 echo ""
 echo "==> Installing ai-hub CLI to ~/.local/bin/ai-hub..."
 mkdir -p "$HOME/.local/bin"
-ln -sf "$DAEMON_DIR/cli.py" "$HOME/.local/bin/ai-hub"
+ln -sfr "$DAEMON_DIR/cli.py" "$HOME/.local/bin/ai-hub"
 
 echo ""
 echo "Done! Service status:"
