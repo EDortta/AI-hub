@@ -173,7 +173,11 @@ def ensure_xvfb(display: str = XVFB_DISPLAY) -> str:
             ["xdpyinfo", "-display", display],
             capture_output=True, timeout=2,
         )
-        if r.returncode == 0:
+        # main.py's global SIGCHLD reaper (waitpid -1) can collect this child
+        # before subprocess.run does, turning a real failure into a spurious
+        # returncode 0. xdpyinfo only writes to stdout when the display is up,
+        # so require output as well — returncode alone is not trustworthy here.
+        if r.returncode == 0 and r.stdout.strip():
             return display
     except Exception:
         pass
