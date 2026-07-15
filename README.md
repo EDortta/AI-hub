@@ -22,7 +22,12 @@ bash install/install.sh
 ai-hub setup    # opens Chrome visibly so you can log into ChatGPT
 ```
 
-`install.sh` also runs `loginctl enable-linger` so the daemon survives logout.
+`install.sh` does **not** run `loginctl enable-linger`; run it once yourself so
+the daemon survives logout:
+
+```bash
+loginctl enable-linger "$USER"
+```
 
 ### Authentication (required)
 

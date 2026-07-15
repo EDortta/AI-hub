@@ -8,7 +8,10 @@ SERVICE_SRC="$SCRIPT_DIR/chrome-daemon.service"
 SERVICE_DST="$HOME/.config/systemd/user/chrome-daemon.service"
 
 echo "==> Installing Python dependencies..."
-pip install -r "$DAEMON_DIR/requirements.txt" --quiet
+# --break-system-packages: Debian 12+ marks the system Python as externally
+# managed (PEP 668) and rejects plain `pip install` outside a venv.
+pip install --break-system-packages -r "$DAEMON_DIR/requirements.txt" --quiet \
+    || pip install -r "$DAEMON_DIR/requirements.txt" --quiet
 
 echo "==> Installing Playwright browsers..."
 playwright install chromium --quiet 2>/dev/null || true
