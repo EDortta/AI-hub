@@ -33,12 +33,23 @@ não mais no devel3.
   (`#AIHUB-PAUSED#` / `#AIHUB-MOVED-STAGE4#`).
 - Rollback: reverter `AIGW_AIHUB_BASE_URL`, `systemctl --user enable --now chrome-daemon`.
 
+## Acesso ao Chrome remoto (script único)
+`chrome-daemon/remote_chrome.py` no devel3 sintetiza tudo: abre o túnel SSH ao CDP
+do stage4, conecta o Playwright no Chrome logado e extrai conteúdo. Túnel fecha ao
+sair; reaproveita CDP local se já houver um.
+- CLI: `python3 chrome-daemon/remote_chrome.py https://url [--html|--screenshot f.png]`
+- Lib: `from remote_chrome import RemoteChrome; with RemoteChrome() as rc: rc.open(url); rc.text()`
+- Env: `AIHUB_CDP_SSH` (default `stage4-inovacao`), `AIHUB_CDP_PORT` (9222).
+
+## Geração de imagem cross-host (resolvido)
+A própria API devolve a imagem, sem depender do filesystem do stage4:
+- `POST /image/generate` com `include_bytes:true` → resposta traz `image_b64`+`filename`.
+- `GET /image/fetch?path=<image_path>` → stream dos bytes (confinado SEC-0108).
+- `client.py`: `generate_image_bytes()` e `fetch_image()`.
+- **Gateway** já usa isso: pede bytes, salva no `aihub_image_output_dir` local e
+  expõe `b64_json` + `path` local em `/v1/images/generations`.
+
 ## Pendências conhecidas
-- **Geração de imagem cross-host:** `/image/generate` devolve `image_path` no
-  filesystem do stage4; o `output_dir` relativo do Gateway (`data/aihub-images`)
-  cai fora do path-confinement do stage4. Precisa de endpoint `GET /image/fetch`
-  autenticado (ou retorno base64) antes de usar imagem via Gateway remoto. Chat e
-  browser-execution funcionam sem isso.
 - **Sessões web** invalidam por IP/fingerprint — re-login é passo manual da migração,
   não bug (ver docs/napkin-lessons.md).
 - **X/Twitter:** cookie presente e `/home` carrega, mas a conta pode ter desafio de
