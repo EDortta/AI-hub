@@ -144,6 +144,49 @@ class AIHubClient:
         }, timeout=700)
         return Path(result["image_path"])
 
+    def generate_image_bytes(
+        self,
+        gpt_url: str,
+        prompt: str,
+        orientation: str = "portrait",
+        greeting: str = "Hey, ",
+        reference_image_path: "Path | None" = None,
+    ) -> "tuple[bytes, str]":
+        """Generate an image and return its raw bytes + filename, in one call.
+
+        Works across hosts: the daemon inlines the image (base64) so the caller
+        never needs filesystem access to the daemon host. Use this instead of
+        generate_image() when the daemon runs on another machine.
+        """
+        import base64
+        result = self._post("/image/generate", {
+            "gpt_url": gpt_url,
+            "prompt": prompt,
+            "orientation": orientation,
+            "output_dir": "",
+            "greeting": greeting,
+            "reference_image_path": str(reference_image_path) if reference_image_path else "",
+            "include_bytes": True,
+        }, timeout=700)
+        return base64.b64decode(result["image_b64"]), result.get("filename", "image.png")
+
+    def fetch_image(self, image_path: "str | Path", dest: "str | Path | None" = None) -> bytes:
+        """Fetch the bytes of an already-generated image by its daemon-side path.
+
+        Returns the bytes; if `dest` is given, also writes them there. Lets a
+        remote caller retrieve an image the daemon produced (the /image/generate
+        response only carries the path unless include_bytes was set).
+        """
+        headers = _auth_headers()
+        with httpx.Client(timeout=DEFAULT_TIMEOUT) as c:
+            r = c.get(f"{self.daemon_url}/image/fetch",
+                      params={"path": str(image_path)}, headers=headers)
+            r.raise_for_status()
+            data = r.content
+        if dest is not None:
+            Path(dest).write_bytes(data)
+        return data
+
     def publish_to_x(
         self,
         image_path: "Path",

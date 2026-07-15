@@ -23,7 +23,7 @@ import hmac
 
 import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 # Ensure chrome-daemon dir is on the path when run as a script
@@ -552,6 +552,11 @@ class ImageRequest(BaseModel):
     greeting: str = "Hey, "
     reference_image_path: str = ""
     delete_chat: bool = False
+    # When true the response also carries the image bytes (base64) so a remote
+    # caller does not need filesystem access to the daemon host. The image_path
+    # is still on the daemon host; base64 makes the API self-sufficient in one
+    # round trip. Use GET /image/fetch to stream instead of inlining.
+    include_bytes: bool = False
 
 
 @app.post("/image/generate")
@@ -599,7 +604,32 @@ async def generate_image(req: ImageRequest):
         finally:
             mark_chrome_op_end()
 
-    return {"ok": True, "image_path": str(image_path)}
+    resp: dict = {"ok": True, "image_path": str(image_path)}
+    if req.include_bytes:
+        import base64
+        import mimetypes
+        data = Path(image_path).read_bytes()
+        resp["filename"] = Path(image_path).name
+        resp["content_type"] = mimetypes.guess_type(str(image_path))[0] or "image/png"
+        resp["image_b64"] = base64.b64encode(data).decode("ascii")
+    return resp
+
+
+@app.get("/image/fetch")
+async def fetch_image(path: str):
+    """Stream a generated image back to the caller (bytes, not just a path).
+
+    The same daemon API that produced the image can also return it, so a client
+    on another host does not need filesystem access to the daemon. `path` is
+    confined to the allowed base dirs (SEC-0108) exactly like every other
+    caller-supplied path.
+    """
+    image_path = _confine_path(path, field="path")
+    if not image_path.is_file():
+        raise HTTPException(status_code=404, detail=f"image_not_found: {image_path}")
+    import mimetypes
+    media_type = mimetypes.guess_type(str(image_path))[0] or "application/octet-stream"
+    return FileResponse(image_path, media_type=media_type, filename=image_path.name)
 
 
 class DeleteChatRequest(BaseModel):
