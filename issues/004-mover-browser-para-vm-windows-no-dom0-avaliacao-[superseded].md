@@ -65,3 +65,41 @@ de "execução invisível" no dom0.
 Issue de arquitetura/infra, **não resolvível autonomamente**. Superada pela 005
 (Linux VM em KVM/libvirt no dom0A, não Windows/Xen). Recomendação: reescrever esta
 issue apontando para a 005 ou fechá-la como `[superseded]`. Decisão do operador.
+
+---
+
+## Fechamento (2026-07-16) — [superseded] por WK-20260715-aihub-stage4
+
+Não superada pela 005, e sim **pela migração para o stage4**, que já aconteceu em
+2026-07-15 e entregou tudo que esta issue pedia — por outro caminho, sem dom0, sem
+Windows e sem WoL.
+
+O que a issue queria e o que o stage4 dá (`handoff.md`, "Topologia atual"):
+
+| Objetivo desta issue | Estado no stage4 |
+|---|---|
+| Browser fora do host que dorme (devel3, 07:00–18:00) | ✅ daemon+Chrome no stage4 (`192.168.7.200`), VM Proxmox **sempre ligada** |
+| VM dedicada, não o host de trabalho | ✅ VM Debian 12 dedicada, usuário `ai-hub` isolado (SEC-0107) |
+| Sessão ChatGPT real e persistente | ✅ perfil persistente sob Xvfb `:99`; re-login via x11vnc quando preciso |
+| Execução invisível | ✅ Xvfb, sem desktop |
+| Watchdog local não mata mais o browser | ⚠️ **não** — ver ressalva abaixo |
+
+**Ressalva que a 005 errou.** A 005 afirma: *"A 001 vira não-aplicável neste deployment
+(o Chrome remoto não é gerenciado pelo watchdog local)"*. Isso valia para a arquitetura
+CDP-remoto que a 005 desenhou — daemon num host, Chrome noutro. **Não é o que o stage4 é.**
+No stage4, daemon e Chrome moram na *mesma* VM e o watchdog é local ao Chrome. A 001
+continua **plenamente aplicável**, e o bug de raiz dela (reaper matando renderer filho do
+Chrome gerenciado) foi corrigido em 2026-07-16, não contornado pelo deployment.
+
+**O que não veio junto:** CDP pela rede interna. No stage4 o CDP fica em loopback
+(`127.0.0.1:9222`, nunca exposto) e o acesso remoto é túnel SSH sob demanda
+(`~/scripts/aihub-cdp-tunnel.sh`, `remote_chrome.py`). Isso é **melhor** que o desenho
+desta issue, que expunha CDP na rede interna e precisava de tabela de riscos para isso —
+CDP dá controle total do browser; loopback + túnel elimina a superfície em vez de
+restringi-la.
+
+**Decisão do operador de 2026-07-01 (Windows 11): descartada por obsolescência**, não por
+discordância. O ganho, como a própria 005 já dizia, "vem da VM dedicada + perfil real, não
+do SO" — e a VM dedicada agora existe, rodando Linux.
+
+Nada a fazer. Fechada.
