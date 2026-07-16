@@ -223,6 +223,33 @@ comprometido. Trocar um pelo outro não é ganho, é troca lateral — e o perfi
 caro (2FA manual para recriar). `nesting=1` já está ligado justamente para isto.
 Ver `security-standards.md` §3: "flags que desligam proteções nunca são default".
 
+## PROVADO (2026-07-16) — Chrome roda COM sandbox no CT unprivileged
+
+A linha vermelha era o risco que podia matar esta issue. **Passou, com evidência**, não com
+"não deu erro". Chrome 150.0.7871.128 instalado no CT 4001, rodando como `ai-hub` (não root),
+sob Xvfb `:99`, **sem `--no-sandbox`**:
+
+```
+browser=28932  zygote=28940  renderer=29008        usuário: ai-hub
+  user  ns: browser=4026532428  renderer=4026532596   DIFERENTE → isolado
+  pid   ns: browser=4026532432  renderer=4026532679   DIFERENTE → isolado
+  net   ns: browser=4026532435  renderer=4026532605   DIFERENTE → isolado
+  chroot  : renderer em /proc/28943/fdinfo  (layer-1 sandbox)
+  seccomp : Seccomp: 2 / Seccomp_filters: 2  (filtro BPF ativo)
+CDP: {"Browser": "Chrome/150.0.7871.128", "Protocol-Version": "1.3"}
+```
+
+Todas as camadas do sandbox do Chrome estão ativas dentro do LXC unprivileged. O
+`features: nesting=1` entrega o que prometia. **Não haverá troca lateral**: ganhamos a
+fronteira do container **e** mantemos a do renderer.
+
+**Erro meu no caminho, registrado porque ensina:** o primeiro teste rodou Chrome como root e
+falhou com `Running as root without --no-sandbox is not supported`. Não era o sandbox
+falhando — era o Chrome se recusando a rodar como root, que é *exatamente* o comportamento
+correto e a razão de SEC-0107 usar usuário dedicado. O teste estava errado, não o desenho.
+Quem for validar isso de novo: **teste como `ai-hub`, nunca como root**, ou vai concluir a
+coisa errada.
+
 ## Comportamento esperado
 
 - `AiHubDriver.health()` **do devel3** → `('UP', None)` contra `http://192.168.7.200:9480`,
