@@ -130,6 +130,64 @@ protege o `:9480` hoje. Consequência: **o `:9400` do CT fica alcançável da LA
 nível de proteção que o `:9480` já tem hoje. Não é regressão; é a mesma superfície, mudando
 de porta. Fechar isso para a LAN é firewall do Proxmox — ver "O CT tem IP na LAN", escopo separado.
 
+## Rede — o CT está na LAN, e a convenção da caixa diz que não deveria
+
+**Decisão do operador (2026-07-16): IP interno à caixa, com o nginx do host como porta
+única.** Está certo, e é a convenção que a própria caixa já segue — o 4001 é o fora-da-curva:
+
+| CT | bridge | IP | precisa de internet? |
+|---|---|---|---|
+| 1001 dnsmasq | vmbr2 | 192.168.1.2 | não |
+| 2001 rsyslog | vmbr2 | 192.168.1.3 | não |
+| 3001 mosquitto | vmbr2 | 192.168.1.4 | não |
+| **4001 ai-ecosystem** | **vmbr0** ← anomalia | **192.168.7.201** (LAN) | **SIM** (chatgpt.com) |
+
+`vmbr2` = `192.168.1.0/24`, host em `192.168.1.1`. `vmbr0` = LAN (host em `192.168.7.200/24`
+**e** `192.168.71.200/24` — é por aí que o devel3, em `192.168.71.6`, alcança).
+
+### O bloqueio: vmbr2 não tem saída para a internet (medido, 2026-07-16)
+
+```
+ip route get 1.1.1.1 from 192.168.1.2   →  RTNETLINK: Network is unreachable
+pct exec 1001 -- ping -c1 1.1.1.1       →  100% packet loss
+pct exec 1001 -- getent hosts chatgpt.com →  (nada)
+pct exec 4001 -- getent hosts chatgpt.com →  resolve  (está no vmbr0)
+```
+
+A regra `-A POSTROUTING -s 192.168.1.0/24 -o vmbr0 -j MASQUERADE` existe e `ip_forward=1`,
+mas a **rota default do host é pelo wifi** (`default via 192.168.15.1 dev wlxd037453dacfd
+metric 50`, com `vmbr0` só em metric 200). O tráfego do vmbr2 não sai por vmbr0, então não é
+mascarado — e morre.
+
+**Nunca deu na vista** porque nenhum CT do vmbr2 precisa de internet: dnsmasq, rsyslog e
+mosquitto são internos. O hub é o primeiro que precisa. Mover o 4001 para vmbr2 hoje, sem
+mais nada, **mata o hub**.
+
+### Duas saídas (decisão pendente)
+
+**R1 — Consertar a saída do vmbr2.** Masquerade também na interface do wifi (ou acertar a
+rota). Fica limpo e beneficia qualquer CT futuro.
+*Risco:* mexe em **roteamento/NAT do host** — a caixa que roda DHCP (o próprio dnsmasq do
+vmbr2!), OpenVPN e o túnel reverso. É exatamente a categoria de mudança que a epic 004
+declarou intocável. Precisa de janela e rollback pensado.
+
+**R2 — CT dual-homed, com o daemon amarrado à interface interna.**
+`net0` = vmbr2 `192.168.1.5` (o nginx do host alcança por aqui) · `net1` = vmbr0 (só para a
+saída do Chrome; **nenhum serviço escuta nela**).
+`AIHUB_BIND_HOST=192.168.1.5` → o daemon **não** faz bind na interface da LAN. O `:9400` fica
+inalcançável da rede, que é o objetivo, **sem tocar no roteamento do host**.
+*Atenção:* o `sshd` do CT faz bind em `*:22` (todas as interfaces) — ou se amarra também, ou
+se aceita ssh pela LAN, ou firewall do Proxmox no `net1`.
+
+**Recomendação: R2.** Entrega o objetivo (`:9400` fora da LAN, nginx como porta única) sem
+mexer na rede da caixa que carrega a infra intocável. R1 é melhor no papel e vale como issue
+própria — não como efeito colateral de mover o hub. O `AIHUB_BIND_HOST` (entregue no commit
+`6f81bc7`) já aceita interface específica, e há teste para isso.
+
+Se ficar em **vmbr0 mesmo** (192.168.7.201, o que existe hoje): funciona, o hub tem internet,
+e o `:9400` fica alcançável da LAN com a mesma proteção que o `:9480` já tem hoje (o token
+fail-closed). Não é regressão — mas também não é o que você pediu.
+
 ## Linha vermelha (não negociável)
 
 **Se o Chrome não subir sem `--no-sandbox` dentro do CT, pare e reavalie — não desligue o
