@@ -179,14 +179,41 @@ inalcançável da rede, que é o objetivo, **sem tocar no roteamento do host**.
 *Atenção:* o `sshd` do CT faz bind em `*:22` (todas as interfaces) — ou se amarra também, ou
 se aceita ssh pela LAN, ou firewall do Proxmox no `net1`.
 
-**Recomendação: R2.** Entrega o objetivo (`:9400` fora da LAN, nginx como porta única) sem
-mexer na rede da caixa que carrega a infra intocável. R1 é melhor no papel e vale como issue
-própria — não como efeito colateral de mover o hub. O `AIHUB_BIND_HOST` (entregue no commit
-`6f81bc7`) já aceita interface específica, e há teste para isso.
+### Decidido: **R1** (operador, 2026-07-16), e ele é mais barato do que eu avisei
 
-Se ficar em **vmbr0 mesmo** (192.168.7.201, o que existe hoje): funciona, o hub tem internet,
-e o `:9400` fica alcançável da LAN com a mesma proteção que o `:9480` já tem hoje (o token
-fail-closed). Não é regressão — mas também não é o que você pediu.
+Diagnóstico fechado depois de medir: **R1 não mexe em roteamento.** Descartados FORWARD
+(`-P ACCEPT`), `rp_filter` (all=2, vmbr2=0) e `ip_forward` (=1). A causa é uma linha:
+
+```
+/etc/network/interfaces:31
+post-up iptables -t nat -A POSTROUTING -s 192.168.1.0/24 -o vmbr0 -j MASQUERADE
+                                                          ^^^^^^^^ mas a default é o wifi
+```
+
+A regra masquerada só a saída pela `vmbr0`; a rota default da caixa é
+`wlxd037453dacfd metric 50`. O pacote sai pelo wifi, não casa a regra, e vai embora com origem
+privada. Conserto = **uma regra aditiva** (`! -o vmbr2` em vez de `-o vmbr0`), reversível com
+um `-D`, numa faixa que hoje não sai de jeito nenhum. Pior caso: continua como está.
+
+Isso vive em issue própria, **fora deste repo** porque é infra da caixa e não do hub:
+`~/Sync/Projects/stage4-hardening/issues/001-vmbr2-sem-saida-para-internet-[draft].md`.
+**Ela bloqueia esta 008**: sem saída no vmbr2, hub no vmbr2 é hub sem chatgpt.com.
+
+Com R1 feito, esta issue fica simples: `net0` do 4001 vai para **vmbr2 `192.168.1.5`**, o
+daemon segue em `AIHUB_BIND_HOST=0.0.0.0` (agora só há interface interna), e o nginx do host
+faz `proxy_pass http://192.168.1.5:9400` + `proxy_set_header Host localhost`. O `:9400` deixa
+de existir para a LAN — por construção, não por regra.
+
+> R2 (CT dual-homed com o daemon amarrado à interna) fica registrado como **plano B** se o R1
+> esbarrar em algo na hora. O `AIHUB_BIND_HOST` aceita interface específica e tem teste.
+
+### Epic guarda-chuva
+
+Esta issue é o **piloto** de `~/Sync/Projects/stage4-hardening/epic.md` — tirar da baremetal
+do stage4 tudo que é serviço exposto. Ela prova o padrão (Chrome com sandbox em CT
+unprivileged; CT no vmbr2; nginx do host como porta única) que a `004` daquela epic vai
+aplicar no `zeecred-sftp` — um app de upload rodando **como root** no hypervisor, caso ainda
+mais forte que o nosso.
 
 ## Linha vermelha (não negociável)
 
