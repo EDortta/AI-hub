@@ -28,10 +28,29 @@ seletores do delete. Ao implantar, note que o `watchers.json` **muda comportamen
 watchers registrados voltam depois do restart (era o bug 007; agora é a feature).
 
 
-## Topologia atual (desde 2026-07-15, WK-20260715-aihub-stage4)
+## Topologia atual (desde 2026-07-16, WK-20260716-hub-para-ct-4001)
 
-O chrome-daemon **roda no stage4** (`root@192.168.7.200`, VM Proxmox Debian 12),
-não mais no devel3.
+O chrome-daemon **roda no CT 4001 `ai-ecosystem`** do stage4 — **não** na baremetal.
+
+- **stage4 é o HOST Proxmox** (`/etc/pve` presente), `192.168.7.200`. A frase anterior aqui
+  ("VM Proxmox Debian 12") **estava errada** e induziu a desenhar em cima de ficção: não há
+  VM; o daemon estava direto no hypervisor.
+- **CT 4001**: Debian 12, `unprivileged: 1`, `features: nesting=1`, 3G/2 cores, **rede
+  interna `vmbr2` `192.168.1.5`** — fora da LAN.
+- **Chrome com sandbox completo** dentro do CT unprivileged (userns/pidns/netns do renderer
+  isolados, chroot, seccomp 2). **Nunca** `--no-sandbox`.
+- **API**: `0.0.0.0:9400` **dentro do CT** (`AIHUB_BIND_HOST`), exposta só pelo **nginx do
+  host** em `:9480` (`proxy_pass http://192.168.1.5:9400`, `Host: localhost`). Porta única.
+- **CDP** `127.0.0.1:9222` **do CT** — inalcançável do hypervisor e da LAN.
+- **Acesso**: `ssh ai-ecosystem` (ProxyJump por `stage4-inovacao`) ou `pct enter 4001`.
+- **Guardian** roda no host (precisa do `pct`); **process_monitor** roda dentro do CT.
+- **Rollback**: perfil e checkout do `ai-hub` intactos no host; unit apenas `disable`.
+
+> **PENDENTE: login do ChatGPT (2FA, do operador).** `logged_in: false`. Já estava falso no
+> host antes da migração — é dívida antiga, não custo dela. Ver issue 008.
+
+### Histórico: 2026-07-15 (WK-20260715-aihub-stage4)
+O daemon migrou do devel3 para o stage4 — mas para a **baremetal** do hypervisor.
 
 - **Host:** stage4. Usuário dedicado **`ai-hub`** (systemd user service + linger).
   Nunca root (SEC-0107: Chrome sem `--no-sandbox`).

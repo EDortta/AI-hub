@@ -61,3 +61,33 @@ ao contrário, ficou **fora** do disco de propósito: é texto verbatim do ChatG
 transformaria fila transitória em conteúdo de conversa em repouso.
 *Da próxima vez:* ao dar durabilidade a um estado, perguntar de cada campo "o que acontece se
 ele **não** voltar?" e "o que acontece se ele **voltar**?" — as duas respostas decidem.
+
+## [2026-07-16] WK-20260716-hub-para-ct-4001 — migração para o CT
+
+**Uma afirmação errada num handoff custa mais que um bug.** O handoff dizia que o stage4 era
+uma "VM Proxmox Debian 12". Era o **host Proxmox** — o daemon e o Chrome logado rodavam no
+hypervisor que serve DHCP, OpenVPN e o `/enviar-arquivo/`. Duas issues (004/005) foram escritas
+em cima disso, e eu quase desenhei uma terceira.
+*Da próxima vez:* antes de planejar sobre "onde X roda", confirmar no sistema (`/etc/pve`,
+`pct list`, `ss -tlnp`). Custa um comando. E ao escrever handoff, "VM" e "host" não são sinônimos.
+
+**Dependência ausente desliga um guard em silêncio.** O CT não tinha `psutil`. O
+`_kill_stale_chrome` do watchdog o importa dentro de um `try/except ImportError: return 0` —
+sem psutil, o watchdog inteiro vira no-op e **não avisa**. O guard existia no código e não
+existia na máquina.
+*Da próxima vez:* guard que degrada para no-op quando falta dependência precisa **logar** a
+degradação. E validar dependência no boot, não no primeiro uso.
+
+**`pgrep` no host de LXC conta os processos do container.** `pgrep -c chrome` no hypervisor
+retornou 22 depois da migração — o LXC compartilha o `/proc`. Só o `cgroup`
+(`/lxc/4001/...`) e o pid namespace distinguem. Quase concluí que tinha falhado em limpar o host.
+*Da próxima vez:* para provar "o host está limpo", use `grep lxc /proc/<pid>/cgroup`, nunca `pgrep`.
+
+**Copiar o código do host em vez do repo.** Empacotei o `chrome-daemon` de `/home/ai-hub/...`
+(a versão implantada) e mandei só o `main.py` novo por cima → `ImportError` em loop de restart.
+*Da próxima vez:* deploy sai do repo, com tudo junto; nunca misture um arquivo novo com uma
+árvore velha.
+
+**A sessão não sobrevive nem para container na mesma caixa.** Perfil de 3.4G copiado,
+`logged_in: false`. A lição de 2026-07-15 (perfil não migra entre hosts) vale também aqui.
+*Da próxima vez:* planeje o re-login manual como passo do plano, não como contingência.
