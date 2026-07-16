@@ -54,3 +54,29 @@ URL reverte para `chatgpt.com/` ou `chat.openai.com/`.
 **Validado:** compila / AST.
 **Não validado (requer sessão ChatGPT viva):** que o envio real dispare a geração e que a
 detecção de perda de contexto acione no cenário observado. Testar end-to-end.
+
+---
+
+## Revisão (2026-07-16) — WK-20260716-ai-issues-sweep
+
+A detecção de perda de contexto estava correta mas **enterrada dentro do loop de espera**
+de `_wait_for_done`, misturada com o polling do stop button. Consequência prática: não
+havia como testá-la sem um browser vivo — e é por isso que ela chegou até aqui como
+"não validado".
+
+Extraída para `is_chatgpt_home(url)`, função pura, agora coberta por teste
+(`chrome-daemon/tests/test_image_generator.py`). A extração também consertou dois furos
+do check original (`base = cur.split("?")[0].rstrip("/")`):
+
+- **fragmento não era removido** — `https://chatgpt.com/#foo` não era reconhecido como home,
+  e a espera seguiria os ~600s que a issue quer evitar;
+- **`url` vazia/None** — `(page.url or "")` virava `""`, que não casa com nenhuma home e
+  cai no erro genérico. Correto, mas por acidente; agora é explícito e testado.
+
+Testado também o caso lookalike (`https://chatgpt.com.evil.net/` não é home) — o check é
+sobre a URL base inteira, não substring.
+
+**Validado:** `python3 -m pytest` verde; `is_chatgpt_home` coberta em 15 casos.
+**Não validado (requer sessão ChatGPT viva no stage4 — deploy gateado):** que o envio real
+dispare a geração e que o foco do composer resolva o sintoma observado. O `_fill_and_send`
+depende de seletores da UI do ChatGPT e não é testável fora do browser. Continua `[review]`.

@@ -18,6 +18,21 @@ IMAGE_TIMEOUT_S = 600
 _GENERATED_IMG_MIN_PX = 300
 
 
+_CHATGPT_HOME_BASES = ("https://chatgpt.com", "https://chat.openai.com")
+
+
+def is_chatgpt_home(url: str) -> bool:
+    """True when `url` is the bare ChatGPT home rather than a GPT/conversation page.
+
+    Landing back on the home URL after a send means the GPT context was lost, so
+    nothing will ever generate and waiting is pointless (issue 002). Query string
+    and trailing slash are irrelevant to that judgement; a path (a /g/... GPT or a
+    /c/... conversation) is what distinguishes "somewhere real" from "home".
+    """
+    base = (url or "").split("?")[0].split("#")[0].rstrip("/")
+    return base in _CHATGPT_HOME_BASES
+
+
 def _is_generated_src(url: str) -> bool:
     # Matches OpenAI CDN patterns: oaiusercontent, oaistatic, oaidall, estuary, prod-files.oai*
     return any(p in url for p in ("oai", "estuary", "openai.com", "prod-files"))
@@ -199,8 +214,7 @@ def _wait_for_done(page) -> None:
         # appear (issue 002). A bare chatgpt.com/ (or chat.openai.com/) URL means
         # the GPT context was lost when the prompt was sent.
         cur = (page.url or "")
-        base = cur.split("?")[0].rstrip("/")
-        if base in ("https://chatgpt.com", "https://chat.openai.com"):
+        if is_chatgpt_home(cur):
             raise RuntimeError(
                 "generation_did_not_start: page reverted to ChatGPT home — "
                 f"GPT context lost on send (url={cur!r})."

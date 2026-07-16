@@ -45,3 +45,26 @@ ganhou flag `delete_chat: bool = false` (apaga após o download da imagem). Novo
 **Validado:** compila / AST.
 **Não validado (UI frágil, requer sessão ChatGPT viva):** seletores do menu Delete/confirm.
 Ajustar seletores conforme a UI real antes de fechar como `[finished]`.
+
+---
+
+## Revisão (2026-07-16) — WK-20260716-ai-issues-sweep
+
+Implementação revisada e correta quanto ao contrato: best-effort, log-and-continue, nunca
+derruba a geração; `delete_chat` é aditivo (default `false`), então nenhum cliente atual
+muda de comportamento.
+
+Uma correção aplicada: `/page/delete-chat` **não marcava a operação in-flight** de forma
+consistente com os demais endpoints de Chrome — agora usa `chrome_op_guard()` como todos
+(ver issue 001). Sem isso, um delete concorrente com uma geração podia ver o watchdog
+reaproveitar o renderer.
+
+Nada aqui é testável fora do browser: `delete_current_chat` é inteiramente seletores da UI
+do ChatGPT (menu → Delete → confirm). Testar seletores contra mocks provaria apenas que o
+mock combina com o código — não que a UI do ChatGPT combina. Por isso **não foi criado
+teste de unidade para esta issue**; a validação honesta é o e2e com sessão viva.
+
+**Validado:** compila; guard consistente com os demais endpoints.
+**Não validado (requer sessão ChatGPT viva no stage4 — deploy gateado):** os seletores.
+Continua `[review]`. Risco baixo por desenho: se os seletores não casarem, retorna
+`deleted: false` e a imagem continua sendo entregue.

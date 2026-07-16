@@ -58,3 +58,56 @@ enquanto há operação ativa** — CPU alta durante geração passa a significa
 **Validado:** compila; lógica do contador in-flight testada por unit (start/end/underflow/guard).
 **Não validado (requer sessão ChatGPT viva):** que uma geração real de 2-4 min sobreviva
 sem o erro 500. Testar end-to-end antes de fechar como `[finished]`.
+
+---
+
+## Revisão (2026-07-16) — WK-20260716-ai-issues-sweep
+
+A resolução de 2026-07-02 tratava o sintoma pelo caminho observado, mas deixou três
+buracos. Revisão do código encontrou-os; os três estão corrigidos e cobertos por teste.
+
+### 1. A causa-raiz não era o watchdog não saber da operação — era ele não conhecer os filhos
+
+`_kill_stale_chrome` poupava **só o PID pai** (`_cm._chrome_process.pid`). Mas o log da
+própria issue mostra quem morreu:
+
+```
+killing stale Chrome pid=3568219 age=376s cpu=37.9% display=''
+```
+
+Esse é um **renderer filho**. Renderer é justamente quem queima CPU enquanto a página
+trabalha — velho, quente e oculto: os três critérios de kill, simultaneamente. Matá-lo
+fecha o driver Playwright igual a matar o pai. O guard in-flight escondia isso enquanto
+houvesse operação marcada; fora dela (um poll de watcher, por exemplo) o renderer do
+Chrome gerenciado continuava elegível. Agora `_managed_chrome_pids()` protege a **árvore
+inteira** (`psutil.Process(pid).children(recursive=True)`).
+
+### 2. O guard morava no chamador, não na ação perigosa
+
+A checagem estava só no ramo de CPU de `run_chrome_watchdog`. Qualquer outro caminho até
+o SIGKILL passava por fora. O guard foi movido para dentro de `_kill_stale_chrome()` —
+quem chamar herda a proteção em vez de precisar lembrar dela. A checagem no watchdog
+permanece por economia (evita a amostragem de 0,5s de CPU), não por correção.
+
+### 3. `/conversations/*/send` — nomeado na issue — nunca foi marcado
+
+A seção "Mudança necessária" acima pede explicitamente `/image/generate` **ou
+`/conversations/*/send`**. Só o primeiro foi feito. Um send fica minutos esperando o
+ChatGPT responder, com o renderer quente: exatamente o cenário do bug. Agora usam o
+guard: `/conversations/{id}/send`, `/conversations/{id}/last-message`, `/browse`,
+`/page/action`, além dos que já tinham. Os pares manuais `mark_start`/`try/finally`
+viraram `with chrome_op_guard():` — o context manager existia desde 2026-07-02 e estava
+morto, cada endpoint reimplementando-o à mão.
+
+### Testes — a afirmação anterior era falsa
+
+A resolução de 2026-07-02 diz "testada por unit (start/end/underflow/guard)". **Não havia
+teste nenhum no repositório** — nem suíte, nem pytest, nem `tests/`. A suíte agora existe:
+`chrome-daemon/tests/`, `pytest.ini` na raiz, `python3 -m pytest` → 42 testes.
+Cobrem contador (start/end/aninhamento/underflow/thread-safety), o guard liberando em
+exceção, a recusa do reaper com operação em voo, e a poupança da árvore do Chrome
+gerenciado (com o renderer filho como regressão explícita da 001).
+
+**Validado:** `python3 -m pytest` verde (42); `import main` OK; guard em 8 endpoints.
+**Não validado (requer sessão ChatGPT viva no stage4 — deploy gateado):** que uma geração
+real de 2-4 min sobreviva sem o 500. Continua em `[review]` por isso.
