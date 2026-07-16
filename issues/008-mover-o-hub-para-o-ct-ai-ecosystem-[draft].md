@@ -62,8 +62,10 @@ dependências, e a migração de 2026-07-15 instalou o hub **no host** mesmo ass
 
 ## Escopo
 
-1. **Tornar o bind do daemon configurável** (`AIHUB_BIND_HOST`, default `127.0.0.1`) —
-   mudança aditiva no repo, testável aqui, sem tocar no stage4.
+1. ~~**Tornar o bind do daemon configurável**~~ — **FEITO** (2026-07-16, commit `6f81bc7`).
+   `AIHUB_BIND_HOST`, default `127.0.0.1`, valor vazio cai de volta para loopback.
+   6 testes em `tests/test_bind_host.py`. Era a única parte de código desta issue e não
+   toca no stage4: sem a env, nada muda. **Já pode ser implantado sozinho, hoje.**
 2. **Instalar no CT 4001**: `google-chrome-stable`, dependências do `requirements.txt`,
    o `chrome-daemon` (via `install/install.sh`, que já deriva paths de `$DAEMON_DIR`),
    usuário dedicado `ai-hub` + `loginctl enable-linger`, systemd user service.
