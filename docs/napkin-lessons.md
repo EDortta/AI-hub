@@ -29,3 +29,35 @@ Copiar o `chrome-profile` (ou reinjetar cookies via CDP) NÃO preserva login de
 ChatGPT/Google entre hosts: eles invalidam a sessão por mudança de IP/fingerprint.
 Planejar sempre re-login manual (x11vnc no Xvfb :99 + túnel SSH) como passo real da
 migração, não como contingência.
+
+## [2026-07-16] WK-20260716-ai-issues-sweep — guard no lugar errado, e teste que não existia
+
+**Um guard ao lado do chamador não é um guard.** O guard in-flight da issue 001 foi posto
+num ramo do `run_chrome_watchdog`, mas o `SIGKILL` mora em `_kill_stale_chrome()`. Qualquer
+outro caminho até o reaper passava por fora. Pior: o reaper poupava só o **PID pai** do
+Chrome — e o processo que o log da própria issue mostra sendo morto no meio da geração
+(`pid=3568219 age=376s cpu=37.9% display=''`) era um **renderer filho**: velho, quente e
+oculto, ou seja, os três critérios de kill ao mesmo tempo. O guard escondia o sintoma; a
+proteção não cobria o que dizia cobrir.
+*Da próxima vez:* guard vai **dentro** da operação perigosa. E quando a proteção fala de "o
+processo", perguntar se ela cobre a **árvore** — renderers são filhos.
+
+**Escopo pela metade sem nota é escopo perdido.** A issue 001 pedia `/image/generate` **ou**
+`/conversations/*/send`. Só o primeiro foi feito, e ninguém escreveu que o outro ficou de
+fora — então ficou de fora por 14 dias em silêncio.
+*Da próxima vez:* implementar o escopo nomeado inteiro, ou escrever qual parte foi pulada e
+por quê. Meio guard é um guard com uma exceção que ninguém documentou.
+
+**Afirmar teste que não existe é pior que não testar.** A resolução dizia "lógica do contador
+in-flight testada por unit (start/end/underflow/guard)". O repositório não tinha teste
+nenhum: nem suíte, nem pytest, nem `tests/`. A frase aposentou o risco na cabeça de todo
+leitor seguinte.
+*Da próxima vez:* nomear o arquivo e mostrar a execução, ou escrever `não validado: <o quê>`.
+
+**Persistir o registry sem persistir `seen_hashes` troca um bug por outro pior.** Um watcher
+restaurado sem o conjunto de hashes vistos relê a conversa inteira e roteia **toda mensagem
+antiga para o inbox como se fosse nova** — "o watcher sumiu" viraria "avalanche". O `inbox`,
+ao contrário, ficou **fora** do disco de propósito: é texto verbatim do ChatGPT, e gravá-lo
+transformaria fila transitória em conteúdo de conversa em repouso.
+*Da próxima vez:* ao dar durabilidade a um estado, perguntar de cada campo "o que acontece se
+ele **não** voltar?" e "o que acontece se ele **voltar**?" — as duas respostas decidem.
