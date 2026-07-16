@@ -259,6 +259,83 @@ coisa errada.
 - `ss -tlnp | grep 9222` **no host** → vazio.
 - Geração de imagem e `/conversations/*/send` funcionando de dentro do CT.
 
+## EXECUTADO (2026-07-16) — migração feita, falta **só o seu login**
+
+Aprovado por "faz tudo" (operador, 2026-07-16). Feito e verificado:
+
+| Passo | Estado |
+|---|---|
+| `AIHUB_BIND_HOST` configurável | ✅ commit `6f81bc7`, e **em produção**: daemon do CT escuta `0.0.0.0:9400` |
+| Chrome no CT **com sandbox** | ✅ provado (ver seção acima) |
+| Hub instalado no CT 4001 | ✅ código + deps + unit systemd user + linger + Xvfb como serviço |
+| CT movido para a rede interna | ✅ `vmbr0/192.168.7.201` → **`vmbr2/192.168.1.5`** |
+| Perfil do Chrome (3.4G) copiado | ✅ |
+| nginx do host repontado | ✅ `proxy_pass http://192.168.1.5:9400` + `Host: localhost`; `nginx -t` OK, **reload** (não restart) |
+| Host limpo | ✅ daemon `disable --now`; **zero** Chrome/Xvfb/CDP fora de CT |
+| Guardian + process_monitor | ✅ repontados para o CT |
+| **Login no ChatGPT** | ❌ **SEU** — 2FA, ver abaixo |
+
+### Verificação final
+
+```
+Gateway (devel3, config INALTERADA) → AiHubDriver.health() → ('UP', None)
+192.168.1.5:9400 do devel3 → inalcançável   (só via nginx :9480 — porta única)
+192.168.7.201:9400          → morto         (o CT saiu da LAN)
+Chrome fora de CT no host   → 0             (cgroup de todos: /lxc/4001/...)
+                              pid ns do Chrome 4026532432 ≠ host 4026531836
+                              uid visto do host: 101000 (mapeamento unprivileged)
+CDP :9222 no host           → 0
+Infra intocada: /enviar-arquivo/ 200 · 4 CTs running · portas expostas: 22 80 3128 5055 8006 9480
+```
+
+### O que falta: o login (2FA — só você faz)
+
+**A sessão do ChatGPT não sobreviveu à cópia do perfil** — a lição do napkin vale mesmo para
+container na mesma caixa (`logged_in: false` no CT).
+
+**Mas ela já estava morta no host antes de eu encostar em nada**: o daemon do host, religado
+para conferir, também reportou `chatgpt_logged_in: false`. O hub estava sem conseguir fazer o
+trabalho dele há algum tempo. O re-login **não é custo desta migração** — é dívida que já
+existia, e agora um login só resolve as duas coisas.
+
+```bash
+# no CT, expor o :99 por VNC (só loopback):
+ssh ai-ecosystem 'x11vnc -display :99 -localhost -nopw -forever &'
+# do devel3, tunelar e abrir o cliente VNC em localhost:5900:
+ssh -L 5900:127.0.0.1:5900 ai-ecosystem
+# depois:  curl -H "Authorization: Bearer <token>" http://192.168.7.200:9480/session/check
+```
+
+### Rollback (intacto até você mandar apagar)
+
+O perfil e o checkout do `ai-hub` **continuam no host**, e a unit está apenas
+`disable`, não removida. Reverter:
+
+```bash
+systemctl --user -M ai-hub@ enable --now chrome-daemon.service
+cp /etc/nginx/sites-available/ai-hub.conf.bak-20260716 /etc/nginx/sites-available/ai-hub.conf
+nginx -t && systemctl reload nginx
+cp /etc/cron.d/ai-hub.bak-20260716 /etc/cron.d/ai-hub
+```
+
+Limpar o host (`userdel ai-hub`, apagar o perfil de 3.4G) é passo separado, **depois** de o
+login provar o CT. Item 6 do escopo fica aberto por isso.
+
+### Achados do caminho (nenhum estava previsto)
+
+1. **`psutil` não estava instalado no CT.** O `_kill_stale_chrome` do watchdog importa psutil
+   e, sem ele, **retorna 0 em silêncio** — o watchdog inteiro vira no-op. Instalado. Vale
+   como lição: dependência de um guard que falha aberta e calada é um guard que não existe.
+2. **Copiei o código do host, não do repo.** O `main.py` novo importava `JsonFileWatcherStore`
+   de um `watchers.py` velho → `ImportError` em loop. Resolvido enviando o `chrome-daemon`
+   inteiro do repo (o que **implantou o trabalho de 2026-07-16**: watchdog, persistência,
+   cobertura do guard — 48 testes verdes).
+3. **Os CTs de infra são Alpine**, não Debian: sem `systemd`, sem `apt`. O script de ssh teve
+   de ser refeito com `apk`/`rc-service`.
+4. **`pgrep -c chrome` no host conta os processos do CT** — o LXC compartilha o `/proc` do
+   host. Só o `cgroup`/namespace distingue. Quem for auditar isso depois: **não use `pgrep`
+   para concluir "o host está sujo"**, use `grep lxc /proc/<pid>/cgroup`.
+
 ## Impacto
 
 - **Positivo**: CDP e sessão ChatGPT saem do hypervisor; renderer do Chrome fica contido;
