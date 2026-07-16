@@ -1,5 +1,33 @@
 # Handoff — chrome-daemon
 
+## Sessão 2026-07-16 (WK-20260716-ai-issues-sweep) — issues 001/002/003/007-p1
+
+Varredura das issues abertas: implementar, criticar, corrigir. **Nada foi implantado** —
+o daemon no stage4 continua rodando o código anterior. Deploy é passo seu.
+
+- **Suíte de testes criada do zero** (o repo não tinha nenhuma): `chrome-daemon/tests/`,
+  `pytest.ini` na raiz. `cd ~/Sync/Projects/AI/hub && python3 -m pytest` → **42 testes**.
+- **001** — causa-raiz corrigida, não o sintoma: `_kill_stale_chrome` poupava só o PID pai;
+  quem o log da issue mostra morrendo é um **renderer filho**. `_managed_chrome_pids()`
+  agora protege a árvore. Guard movido para **dentro** do reaper. `/conversations/*/send`
+  (nomeado na issue, nunca marcado) e mais 3 endpoints agora usam `chrome_op_guard()`.
+- **002** — detecção de perda de contexto extraída para `is_chatgpt_home()`, pura e testada.
+- **003** — revisada; guard consistente. Seletores continuam não testáveis fora do browser.
+- **007 parte 1** — registry **persistido**: `WatcherStore`/`NullWatcherStore`/
+  `JsonFileWatcherStore` (`~/.local/share/ai-hub/watchers.json`, atômico, chmod 600).
+  `restore()` no boot, `checkpoint()` a cada 30s. `seen_hashes` persiste; **inbox não**.
+- **004 e 005** → `[superseded]`: queriam browser em VM dedicada sempre-ligada — o stage4
+  já entregou isso em 2026-07-15.
+- **007 parte 2** (empacotar CLI com pipx) — **adiada por decisão sua**: exige renomear
+  módulos e reescrever o install.sh num daemon em produção que não posso testar e2e.
+
+### Próximo passo (DO THIS FIRST)
+Nada é urgente. Quando quiser fechar 001/002/003 como `[finished]`, o que falta é **e2e com
+sessão ChatGPT viva no stage4** — uma geração de 2-4 min que sobreviva sem o 500, e os
+seletores do delete. Ao implantar, note que o `watchers.json` **muda comportamento no boot**:
+watchers registrados voltam depois do restart (era o bug 007; agora é a feature).
+
+
 ## Topologia atual (desde 2026-07-15, WK-20260715-aihub-stage4)
 
 O chrome-daemon **roda no stage4** (`root@192.168.7.200`, VM Proxmox Debian 12),
