@@ -23,7 +23,7 @@ import hmac
 
 import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel
 
 # Ensure chrome-daemon dir is on the path when run as a script
@@ -121,6 +121,12 @@ def _host_allowed(host_header: str | None) -> bool:
     return host in _ALLOWED_HOSTS
 
 
+# Rotas de documentação — servidas SEM token para que um agente consiga ler o
+# guia só com a URL (o token é para as rotas de operação). Não expõem segredo:
+# descrevem como autenticar, não o token em si. O host-guard continua valendo.
+_PUBLIC_PATHS = {"/", "/llms.txt", "/docs/integration.md"}
+
+
 async def require_auth(
     request: Request,
     authorization: str | None = Header(default=None),
@@ -129,6 +135,10 @@ async def require_auth(
     # DNS-rebinding guard: reject unexpected Host headers.
     if not _host_allowed(request.headers.get("host")):
         raise HTTPException(status_code=403, detail="host_not_allowed")
+
+    # Documentação é pública (sem token) — mas ainda sob o host-guard acima.
+    if request.url.path in _PUBLIC_PATHS:
+        return
 
     if not DAEMON_TOKEN:
         # Fail closed: refuse to serve when no token is configured.
@@ -229,6 +239,45 @@ app = FastAPI(
     # SEC-0001: enforce shared-token auth (+ Host guard) on every endpoint.
     dependencies=[Depends(require_auth)],
 )
+
+
+# ---------------------------------------------------------------------------
+# Documentação (pública — sem token; ver _PUBLIC_PATHS)
+# ---------------------------------------------------------------------------
+
+_DOC_PATH = Path(__file__).parent / "docs" / "INTEGRATION.md"
+
+
+def _read_integration_doc() -> str:
+    try:
+        return _DOC_PATH.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="integration_doc_missing")
+
+
+@app.get("/", include_in_schema=False)
+async def index():
+    """Índice mínimo — aponta o agente/integrador para a documentação."""
+    return {
+        "service": "ai-hub-chrome-daemon",
+        "docs": {
+            "llms_txt": "/llms.txt",
+            "integration_md": "/docs/integration.md",
+        },
+        "auth": "Bearer token em Authorization (rotas de operação); docs são públicas.",
+    }
+
+
+@app.get("/llms.txt", response_class=PlainTextResponse)
+async def llms_txt():
+    """Guia de integração em Markdown, no caminho canônico para agentes LLM."""
+    return PlainTextResponse(_read_integration_doc(), media_type="text/markdown; charset=utf-8")
+
+
+@app.get("/docs/integration.md", response_class=PlainTextResponse)
+async def integration_md():
+    """Mesma documentação em um caminho descritivo."""
+    return PlainTextResponse(_read_integration_doc(), media_type="text/markdown; charset=utf-8")
 
 
 # ---------------------------------------------------------------------------
