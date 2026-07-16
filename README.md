@@ -48,6 +48,12 @@ export AIHUB_DAEMON_TOKEN="$(openssl rand -hex 32)"   # generate once, keep secr
   to block DNS-rebinding. Never hardcode the token; keep it out of version control
   (e.g. put the `export` line in the systemd unit's `Environment=`/`EnvironmentFile=`,
   not in the repo).
+- `AIHUB_BIND_HOST` overrides the bind interface — **loopback stays the default**.
+  Set it only when a reverse proxy must reach the daemon across a network namespace
+  (the daemon inside a container: the host's nginx cannot reach the *container's*
+  `127.0.0.1`). It widens reachability, not authorization — the fail-closed token
+  still guards every endpoint. Pair it with `AIHUB_ALLOWED_HOSTS` (or a
+  `proxy_set_header Host localhost` on the proxy) so the Host check keeps passing.
 
 ## Project registration
 

@@ -62,45 +62,71 @@ dependências, e a migração de 2026-07-15 instalou o hub **no host** mesmo ass
 
 ## Escopo
 
-1. **Instalar no CT 4001**: `google-chrome-stable`, dependências do `requirements.txt`,
+1. **Tornar o bind do daemon configurável** (`AIHUB_BIND_HOST`, default `127.0.0.1`) —
+   mudança aditiva no repo, testável aqui, sem tocar no stage4.
+2. **Instalar no CT 4001**: `google-chrome-stable`, dependências do `requirements.txt`,
    o `chrome-daemon` (via `install/install.sh`, que já deriva paths de `$DAEMON_DIR`),
    usuário dedicado `ai-hub` + `loginctl enable-linger`, systemd user service.
-2. **Validar o sandbox**: Chrome sobe **sem** `--no-sandbox` dentro do CT unprivileged.
+3. **Validar o sandbox**: Chrome sobe **sem** `--no-sandbox` dentro do CT unprivileged.
    *Se não subir, PARE* — ver "Linha vermelha".
-3. **Re-login no ChatGPT** via `x11vnc -display :99 -localhost` + túnel SSH. **Passo humano,
+4. **Re-login no ChatGPT** via `x11vnc -display :99 -localhost` + túnel SSH. **Passo humano,
    com 2FA.** O perfil **não** migra (napkin do repo: ChatGPT/Google invalidam a sessão por
    mudança de IP/fingerprint).
-4. **Repontar o nginx do host**: `ai-hub.conf` `proxy_pass http://127.0.0.1:9400` →
-   o CT. Ver "Decisão A".
-5. **Limpar o host**: parar/desabilitar o service do `ai-hub`, remover o usuário e o
+5. **Repontar o nginx do host**: `proxy_pass` → `http://192.168.7.201:9400` (o IP fixo do
+   CT) + `proxy_set_header Host localhost`. Ver a seção da decisão abaixo.
+6. **Limpar o host**: parar/desabilitar o service do `ai-hub`, remover o usuário e o
    `chrome-profile` do hypervisor. **Só depois do CT provado** — o perfil do host é o
    rollback até lá.
-6. **Guardian**: `/usr/local/sbin/ai-hub-guardian.sh` + `/etc/cron.d/ai-hub` passam a
+7. **Guardian**: `/usr/local/sbin/ai-hub-guardian.sh` + `/etc/cron.d/ai-hub` passam a
    checar o daemon **no CT** (`pct exec 4001 -- systemctl --user -M ai-hub@ ...` ou o
    health via nginx). Hoje reiniciam o do host.
 
-## Decisão A — como o nginx do host alcança o daemon (precisa ser tomada)
+## Como o nginx do host alcança o daemon — **decidido** (operador, 2026-07-16)
 
-O daemon hoje faz bind em `127.0.0.1:9400`. Dentro do CT, **o loopback do CT não é o do
-host**: o nginx do host não alcança `127.0.0.1:9400` do container. Três saídas:
+**O CT tem IP fixo; o nginx do host redireciona para ele.** Uma versão anterior desta issue
+propunha um segundo nginx *dentro* do CT para manter o daemon em loopback. Foi
+over-engineering: o `:9400` já vive hoje atrás de nginx com o mesmo token, então o hop extra
+não compra segurança — compra um componente a mais para manter.
 
-| Opção | Como | Custo / risco |
-|---|---|---|
-| **A1** — daemon bind em `0.0.0.0:9400` no CT; host nginx → `192.168.7.201:9400` | 1 hop | O `:9400` fica **alcançável da LAN inteira** (o CT tem IP em vmbr0). Depende só de token + Host-allowlist para se defender. Contraria "só expomos o que precisamos". |
-| **A2** — daemon segue em `127.0.0.1:9400`; **nginx do CT** (já instalado) escuta na eth0 e faz proxy p/ loopback; host nginx → `192.168.7.201:80` | 2 hops | Daemon nunca escuta fora do loopback do CT. É a forma do bundle `004-04` (`proxy_set_header Host localhost` resolve a allowlist). Um nginx a mais para manter. |
-| **A3** — A1 + **firewall do Proxmox** no CT, liberando `:9400` só para o IP do host | 1 hop | Mais simples que A2, mas a proteção mora fora do CT (regra de firewall), não no bind. |
+O IP **já está fixo**, não há o que fazer: `pct config 4001` →
+`net0: ... ip=192.168.7.201/24, gw=192.168.7.6` (estático, não `dhcp`) e `onboot: 1`.
 
-**Recomendação: A2.** O daemon não escutar fora do loopback é uma propriedade do serviço,
-não uma regra que alguém pode apagar depois — e o nginx do CT já está de pé. Bônus: o bloco
-`/api-hub/` do `004-04` (que eu havia marcado como premissa caduca) volta a ser exatamente
-o artefato certo, só trocando o upstream.
+```nginx
+# /etc/nginx/sites-available/ai-hub.conf (host) — só o upstream muda
+listen 9480;
+server_name 192.168.7.200 stage4;
+proxy_pass http://192.168.7.201:9400;   # era http://127.0.0.1:9400
+proxy_set_header Host localhost;        # ver "Host-allowlist" abaixo
+proxy_set_header Authorization $http_authorization;
+```
 
-## Decisão B — o CT tem IP na LAN de qualquer forma
+### O que isto exige do daemon (mudança de código, pequena)
 
-`192.168.7.201/24` em `vmbr0`. "Fechado lá dentro" **não é automático**: o CT é alcançável
-da rede. O ganho desta issue é preciso e vale por si — **o CDP e o `chrome-profile` saem do
-alcance de todo processo do hypervisor** —, mas não confunda com isolamento de rede. Se o
-objetivo incluir fechar o CT para a LAN, é regra de firewall do Proxmox, escopo separado.
+**O bind é hardcoded**: `chrome-daemon/main.py:794` → `host="127.0.0.1"`. Dentro do CT, o
+loopback do CT não é o do host, então o nginx do host **não alcança** um daemon em
+`127.0.0.1`. Precisa virar configurável:
+
+```python
+# main.py — aditivo e fail-safe: sem a env, o comportamento é o de hoje.
+host=os.getenv("AIHUB_BIND_HOST", "127.0.0.1"),
+```
+
+`AIHUB_BIND_HOST=0.0.0.0` no `daemon.env` do CT. **Default inalterado** → nenhum deployment
+existente muda de comportamento (`design-standards.md` §4: campo novo, opcional, aditivo).
+
+### Host-allowlist — e o que ela *não* protege
+
+O daemon valida o `Host` contra `{127.0.0.1, localhost, ::1}` + `AIHUB_ALLOWED_HOSTS`
+(`main.py:109`). Com `proxy_set_header Host localhost`, o nginx passa e a allowlist segue
+funcionando sem alargá-la. Um chamador direto em `192.168.7.201:9400` mandando
+`Host: 192.168.7.201` toma **403**.
+
+**Mas seja honesto sobre o que isso vale**: forjar um header `Host` é trivial. A allowlist é
+quebra-molas contra DNS-rebinding e engano acidental, **não** contra um atacante deliberado
+na LAN. Quem protege o `:9400` é o **token fail-closed** (SEC-0001) — e ele já é o que
+protege o `:9480` hoje. Consequência: **o `:9400` do CT fica alcançável da LAN**, com o mesmo
+nível de proteção que o `:9480` já tem hoje. Não é regressão; é a mesma superfície, mudando
+de porta. Fechar isso para a LAN é firewall do Proxmox — ver "O CT tem IP na LAN", escopo separado.
 
 ## Linha vermelha (não negociável)
 
@@ -150,4 +176,4 @@ Ver `security-standards.md` §3: "flags que desligam proteções nunca são defa
 - O **Postgres rodando dentro do CT 4001** (`127.0.0.1:5432`): sobra do desenho original
   (um LXC com Gateway + hub + banco). Com o Gateway ficando no devel3, está ocioso. Avaliar
   remoção em issue própria — não mexer aqui.
-- Fechar o CT para a LAN (firewall do Proxmox) — ver Decisão B.
+- Fechar o CT para a LAN (firewall do Proxmox) — ver "O CT tem IP na LAN".

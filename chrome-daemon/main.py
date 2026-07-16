@@ -104,6 +104,17 @@ DAEMON_PORT = int(os.environ.get("AI_HUB_PORT", "9400"))
 # ---------------------------------------------------------------------------
 DAEMON_TOKEN = os.environ.get("AIHUB_DAEMON_TOKEN", "").strip()
 
+# Interface the API binds to. Loopback by default — an existing deployment that
+# never sets this keeps binding 127.0.0.1 and does not change behaviour.
+#
+# Issue 008: inside a container the loopback is the *container's*, so a reverse
+# proxy on the host cannot reach a daemon bound to 127.0.0.1. Setting
+# AIHUB_BIND_HOST=0.0.0.0 there is a named, deliberate opt-in — never the default
+# (security-standards.md §3: services bind loopback by default; wider exposure is
+# explicit opt-in). Whatever the bind, the fail-closed token still guards every
+# endpoint: this widens *reachability*, not authorization.
+BIND_HOST = os.environ.get("AIHUB_BIND_HOST", "127.0.0.1").strip() or "127.0.0.1"
+
 # Hostnames accepted in the Host header. Anything else is treated as a possible
 # DNS-rebinding attempt and rejected.
 _DEFAULT_ALLOWED_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
@@ -791,7 +802,7 @@ async def publish_to_linkedin(req: PublishSocialRequest):
 if __name__ == "__main__":
     uvicorn.run(
         "main:app",
-        host="127.0.0.1",
+        host=BIND_HOST,
         port=DAEMON_PORT,
         log_level="info",
         reload=False,
