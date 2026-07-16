@@ -49,6 +49,16 @@ A própria API devolve a imagem, sem depender do filesystem do stage4:
 - **Gateway** já usa isso: pede bytes, salva no `aihub_image_output_dir` local e
   expõe `b64_json` + `path` local em `/v1/images/generations`.
 
+## Documentação de integração (servida pela API)
+Guia único em `chrome-daemon/docs/INTEGRATION.md`, servido ao vivo pelo daemon
+**sem token** (rotas públicas sob host-guard):
+- `GET http://192.168.7.200:9480/llms.txt` — caminho canônico p/ agentes LLM.
+- `GET http://192.168.7.200:9480/docs/integration.md` — mesmo conteúdo.
+- `GET http://192.168.7.200:9480/` — índice apontando para os docs.
+Para integrar um app: "Integre com o ai/hub, a documentação está em
+http://192.168.7.200:9480/llms.txt". Editar o `.md` no repo + rsync + restart
+atualiza o que a API serve (o endpoint lê o arquivo em disco a cada request).
+
 ## Pendências conhecidas
 - **Sessões web** invalidam por IP/fingerprint — re-login é passo manual da migração,
   não bug (ver docs/napkin-lessons.md).
