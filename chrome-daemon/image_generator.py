@@ -34,6 +34,19 @@ _REASONING_MODE_RE = re.compile(
     r"\b(thinking|reasoning|raciocínio|racioc[ií]nio|medium|high)\b", re.IGNORECASE
 )
 
+# Qualquer token de modo conhecido — raciocínio OU não (Instant/Auto). Serve só
+# para saber que o chip de modo JÁ hidratou: a pill do composer aparece ~3s depois
+# do input box ficar visível, e uma leitura mais cedo devolve string vazia. Sem
+# esta espera, "vazio porque ainda carregando" era confundido com "modo padrão", e
+# o guard de raciocínio não disparava (corrida medida ao vivo 2026-07-17).
+_COMPOSER_MODE_HYDRATED_RE = re.compile(
+    r"\b(instant|auto|thinking|reasoning|raciocínio|racioc[ií]nio|medium|high)\b",
+    re.IGNORECASE,
+)
+# Teto da espera pelo chip. O sintoma que isto previne é de 600s; 8s de margem para
+# hidratar é irrelevante perto disso, e sai antes assim que o token aparece.
+_COMPOSER_MODE_HYDRATE_TIMEOUT_S = 8.0
+
 
 def is_reasoning_mode(label: str | None) -> bool:
     """True quando o rótulo do composer nomeia um modo de raciocínio.
@@ -61,6 +74,40 @@ def _composer_mode_label(page) -> str | None:
     except Exception as exc:  # noqa: BLE001 - diagnóstico nunca derruba a geração
         log.debug("could not read composer mode label: %s", exc)
         return None
+
+
+def settled_composer_mode(
+    page,
+    *,
+    timeout_s: float = _COMPOSER_MODE_HYDRATE_TIMEOUT_S,
+    poll_s: float = 0.25,
+    clock=time.monotonic,
+    sleep=time.sleep,
+) -> str | None:
+    """Rótulo do modo do composer DEPOIS de o chip hidratar. Nunca levanta.
+
+    A pill de modo do ChatGPT (Instant/Medium/High) só aparece ~3s após o input box
+    ficar visível. Ler antes disso devolve string vazia — indistinguível de "modo
+    padrão". Esta função faz poll até o innerText do form conter um token de modo
+    conhecido (sinal de que o chip renderizou) e só então devolve o rótulo, para o
+    guard de raciocínio julgar em cima de um valor confiável.
+
+    Falha ABERTA: se nenhum token conhecido aparecer dentro de `timeout_s` (ex.: um
+    GPT que fixa o modelo e não mostra seletor), devolve a última leitura — que faz
+    o guard seguir a geração em vez de bloquear por não ter conseguido ler.
+    `clock`/`sleep` são injetáveis para teste sem tempo real.
+    """
+    deadline = clock() + timeout_s
+    last: str | None = None
+    while True:
+        label = _composer_mode_label(page)
+        if label is not None:
+            last = label
+        if label and _COMPOSER_MODE_HYDRATED_RE.search(label):
+            return label  # chip hidratou → rótulo confiável
+        if clock() >= deadline:
+            return last  # timeout: sem seletor de modo visível → segue (fail open)
+        sleep(poll_s)
 
 
 def is_chatgpt_home(url: str) -> bool:
@@ -488,12 +535,14 @@ def generate_image(
                 continue
         log.info("GPT page loaded: %s", page.url)
 
-        # Issue 009: sob um modo de raciocínio ("Thinking"), este GPT não aciona a
-        # ferramenta de imagem — fica pensando e a geração nunca vem. Medido:
-        # 11 min sem imagem com Thinking; 30s com o modelo padrão. Falhar aqui em
-        # ~2s, com o modo no erro, em vez de esperar 600s e reportar "nenhuma
-        # imagem apareceu" — que manda quem lê procurar no lugar errado.
-        mode = _composer_mode_label(page)
+        # Issue 009: sob um modo de raciocínio (Thinking/Medium/High), este GPT não
+        # aciona a ferramenta de imagem — fica pensando e a geração nunca vem.
+        # Medido: 11 min sem imagem com raciocínio; 30s com o modo padrão. Falhar
+        # aqui em ~poucos s, com o modo no erro, em vez de esperar 600s e reportar
+        # "nenhuma imagem apareceu" — que manda quem lê procurar no lugar errado.
+        # settled_composer_mode espera o chip de modo hidratar (~3s) antes de julgar:
+        # ler cedo devolvia vazio e o guard não disparava (corrida medida ao vivo).
+        mode = settled_composer_mode(page)
         if is_reasoning_mode(mode):
             raise RuntimeError(
                 f"wrong_model_selected: o composer está em modo de raciocínio ({mode!r}). "
