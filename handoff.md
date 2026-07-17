@@ -46,8 +46,23 @@ O chrome-daemon **roda no CT 4001 `ai-ecosystem`** do stage4 — **não** na bar
 - **Guardian** roda no host (precisa do `pct`); **process_monitor** roda dentro do CT.
 - **Rollback**: perfil e checkout do `ai-hub` intactos no host; unit apenas `disable`.
 
-> **PENDENTE: login do ChatGPT (2FA, do operador).** `logged_in: false`. Já estava falso no
-> host antes da migração — é dívida antiga, não custo dela. Ver issue 008.
+> **Sessão ChatGPT VIVA** (login do operador, 2026-07-17): `logged_in: true`.
+> Provado do devel3: `AiHubDriver.health()` → UP e `status()` → `logged_in=True`, pelo caminho
+> Gateway → nginx(:9480) → CT(192.168.1.5:9400) → Chrome(:99) → ChatGPT.
+
+**Host limpo**: perfil de 3.4G removido, `google-chrome` purgado do hypervisor. Ficou de
+propósito `/home/ai-hub/.config/ai-hub/daemon.env` — **o guardian roda no host e lê o token
+dali**; apagá-lo faria ele tomar 401 e reiniciar um daemon são (armadilha do DIAG-20260707).
+
+### Re-login no ChatGPT (quando a sessão cair)
+```bash
+ssh ai-ecosystem 'su - ai-hub -c "nohup x11vnc -display :99 -localhost -nopw -noshm -forever >/tmp/x11vnc.log 2>&1 &"'
+ssh -L 5900:127.0.0.1:5900 ai-ecosystem     # cliente VNC em localhost:5900
+# depois: matar o x11vnc (é -nopw)
+ssh ai-ecosystem 'pkill x11vnc'
+```
+**`-noshm` e `su - ai-hub` são obrigatórios**: o x11vnc precisa rodar como o dono do Xvfb, ou
+toma `BadAccess` no `X_ShmAttach`; e o MIT-SHM não funciona neste ambiente.
 
 ### Histórico: 2026-07-15 (WK-20260715-aihub-stage4)
 O daemon migrou do devel3 para o stage4 — mas para a **baremetal** do hypervisor.

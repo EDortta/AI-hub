@@ -91,3 +91,18 @@ retornou 22 depois da migração — o LXC compartilha o `/proc`. Só o `cgroup`
 **A sessão não sobrevive nem para container na mesma caixa.** Perfil de 3.4G copiado,
 `logged_in: false`. A lição de 2026-07-15 (perfil não migra entre hosts) vale também aqui.
 *Da próxima vez:* planeje o re-login manual como passo do plano, não como contingência.
+
+**x11vnc precisa rodar como o dono do Xvfb, e com `-noshm`.** A receita que passei ao operador
+falhou com `X Error: BadAccess ... X_ShmAttach`: o `ssh ai-ecosystem` entra como **root**, mas o
+Xvfb roda como **ai-hub** — um processo não anexa a memória compartilhada do X server de outro
+usuário. Escrevi a receita sem ligar que a própria entrada de ssh que eu criei entra como root.
+*Da próxima vez:* `su - ai-hub -c "x11vnc ... -noshm"`. E ao escrever receita que envolve X,
+conferir **quem é dono do display** (`ps -o user= -C Xvfb`), não presumir.
+
+**Apagar o home de um serviço migrado pode ressuscitar um bug antigo.** Ia remover
+`/home/ai-hub` do host depois da migração — mas o **guardian roda no host e lê o token de
+`/home/ai-hub/.config/ai-hub/daemon.env`**. Sem token → curl 401 → guardian conclui "caiu" →
+**reinicia um daemon são**: exatamente o `DIAG-20260707`. Só o perfil (3.4G) e o binário do
+Chrome saíram.
+*Da próxima vez:* antes de apagar o home de um serviço migrado, `grep -rl "/home/<user>"` em
+`/etc/cron.d`, `/usr/local/sbin` e units — o que sobrou pode ser dependência de outra coisa.
