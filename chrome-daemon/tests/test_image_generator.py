@@ -121,3 +121,80 @@ def test_unreadable_composer_fails_open(monkeypatch):
     assert _composer_mode_label(_Page()) is None
     from image_generator import is_reasoning_mode
     assert is_reasoning_mode(_composer_mode_label(_Page())) is False
+
+
+# --- Issue 009 (corrida de hidratação): o chip de modo aparece ~3s DEPOIS do input
+# box; ler cedo devolvia vazio e o guard não disparava mesmo em modo de raciocínio.
+# settled_composer_mode faz poll até o chip hidratar antes de julgar.
+
+class _ScriptedPage:
+    """Page cujo form innerText evolui a cada leitura, simulando a hidratação."""
+
+    def __init__(self, sequence):
+        self._seq = list(sequence)
+        self.reads = 0
+
+    def evaluate(self, _js):
+        i = min(self.reads, len(self._seq) - 1)
+        self.reads += 1
+        return self._seq[i]
+
+
+def _fake_clock():
+    """Relógio determinístico: avança 0.25s a cada consulta (sem tempo real)."""
+    t = {"now": 0.0}
+
+    def now():
+        t["now"] += 0.25
+        return t["now"]
+
+    return now
+
+
+def test_settled_mode_waits_for_hydration_then_detects_reasoning():
+    """Vazio, vazio, e então 'Medium' — deve esperar e devolver o rótulo real."""
+    from image_generator import settled_composer_mode, is_reasoning_mode
+
+    page = _ScriptedPage(["", "", "", "Medium"])
+    label = settled_composer_mode(
+        page, timeout_s=100, poll_s=0, clock=_fake_clock(), sleep=lambda _s: None
+    )
+    assert label == "Medium"
+    assert is_reasoning_mode(label) is True
+
+
+def test_settled_mode_returns_instant_without_false_positive():
+    """Instant hidrata: é modo conhecido, devolve cedo e NÃO é raciocínio."""
+    from image_generator import settled_composer_mode, is_reasoning_mode
+
+    page = _ScriptedPage(["", "Instant"])
+    label = settled_composer_mode(
+        page, timeout_s=100, poll_s=0, clock=_fake_clock(), sleep=lambda _s: None
+    )
+    assert label == "Instant"
+    assert is_reasoning_mode(label) is False
+
+
+def test_settled_mode_fails_open_when_no_chip_ever_appears():
+    """GPT sem seletor de modo: nunca hidrata → timeout → segue a geração."""
+    from image_generator import settled_composer_mode, is_reasoning_mode
+
+    page = _ScriptedPage([""])
+    label = settled_composer_mode(
+        page, timeout_s=1, poll_s=0, clock=_fake_clock(), sleep=lambda _s: None
+    )
+    assert is_reasoning_mode(label) is False  # None/'' → não bloqueia
+
+
+def test_settled_mode_survives_unreadable_page():
+    """evaluate levantando não derruba a geração (fail open)."""
+    from image_generator import settled_composer_mode
+
+    class _Broken:
+        def evaluate(self, _js):
+            raise RuntimeError("UI mudou")
+
+    label = settled_composer_mode(
+        _Broken(), timeout_s=1, poll_s=0, clock=_fake_clock(), sleep=lambda _s: None
+    )
+    assert label is None
