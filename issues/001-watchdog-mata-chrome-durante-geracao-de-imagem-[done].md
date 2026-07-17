@@ -111,3 +111,32 @@ gerenciado (com o renderer filho como regressão explícita da 001).
 **Validado:** `python3 -m pytest` verde (42); `import main` OK; guard em 8 endpoints.
 **Não validado (requer sessão ChatGPT viva no stage4 — deploy gateado):** que uma geração
 real de 2-4 min sobreviva sem o 500. Continua em `[review]` por isso.
+
+
+---
+
+## VALIDADO EM PRODUÇÃO (2026-07-17) — WK-20260716-hub-para-ct-4001
+
+O e2e que faltava desde 2026-07-02 finalmente rodou: geração real, sessão ChatGPT viva, no
+CT 4001. **O watchdog se comportou exatamente como a correção previa**, capturado ao vivo:
+
+```
+11:14:50 Chrome watchdog: combined Chrome CPU 161.8% > 60% — scanning for stale processes.
+11:14:50 Chrome watchdog: no stale processes found (all are managed, visible, young, or low-CPU).
+11:15:44 ai-hub.image: Prompt sent (...)
+11:15:45 ai-hub.image: Generation started (stop button visible). Waiting up to 600s…
+```
+
+CPU combinada a **161,8%** — muito acima do limite de 60% que disparava o kill — e o reaper
+**não matou nada**, porque a árvore inteira do Chrome gerenciado está protegida
+(`_managed_chrome_pids`). Antes da correção de 2026-07-16, esse cenário matava um renderer
+filho e derrubava o driver Playwright com o 500 da issue.
+
+Ocorreu 3 vezes nos logs (131,4% · 114,7% · 161,8%), sempre com o mesmo desfecho: escaneia,
+não acha nada matável, segue. Nenhum `Connection closed while reading from the driver`.
+
+**Nota sobre o deployment**: a 005 afirmava que a 001 seria "não-aplicável" com o browser
+noutra máquina. O CT roda o daemon **e** o Chrome juntos, com watchdog local — a 001 é
+plenamente aplicável, e é bom que tenha sido corrigida.
+
+**[review] → [done].** Validado onde importa: em produção, com carga real.

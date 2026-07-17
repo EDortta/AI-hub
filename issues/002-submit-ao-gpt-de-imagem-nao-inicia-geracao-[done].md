@@ -80,3 +80,37 @@ sobre a URL base inteira, não substring.
 **Não validado (requer sessão ChatGPT viva no stage4 — deploy gateado):** que o envio real
 dispare a geração e que o foco do composer resolva o sintoma observado. O `_fill_and_send`
 depende de seletores da UI do ChatGPT e não é testável fora do browser. Continua `[review]`.
+
+
+---
+
+## VALIDADO EM PRODUÇÃO (2026-07-17) — WK-20260716-hub-para-ct-4001
+
+Os **dois sintomas** da issue foram exercitados numa geração real e **nenhum ocorreu**.
+
+**Sintoma 1 — "Stop button never appeared":**
+```
+11:15:44 ai-hub.image: Prompt sent (Hey, A simple red circle...)
+11:15:44 ai-hub.image: Waiting for generation to start (stop button, up to 60s)…
+11:15:45 ai-hub.image: Generation started (stop button visible).
+```
+**1 segundo.** O log original dizia `11:51:00 Stop button never appeared`. Repare também que
+saiu por `Prompt sent`, não `Prompt sent via Enter key` — o **botão de envio** funcionou, o
+fallback nem foi usado. O foco do composer antes do `fill` fez efeito.
+
+**Sintoma 2 — `page_url` revertendo para `https://chatgpt.com/`:**
+```
+iter=4..23  page_url=https://chatgpt.com/g/g-pmuQfob8d-image-generator/c/6a5a0ede-4768-...
+```
+A URL **ficou no GPT** durante toda a espera, com o id da conversa. O contexto não se perdeu
+uma vez sequer. O `is_chatgpt_home()` não precisou disparar — e é assim que se quer.
+
+**[review] → [done].**
+
+### Achado novo, que NÃO é desta issue (vira issue própria)
+
+A geração começou e **nunca produziu imagem**: o ChatGPT ficou em `Thinking` por >10 min e o
+`_wait_for_new_image` rodou até o timeout com `img_count=4` parado. O screenshot da página
+mostra o seletor de modelo em **"Thinking"** (modelo de raciocínio) e a resposta travada
+nele — não é o envio, não é o contexto, não é o watchdog. Todos os três funcionaram.
+É o modelo/UI do ChatGPT. Ver issue `009`.
