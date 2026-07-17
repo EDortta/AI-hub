@@ -121,3 +121,26 @@ em `aria-label*='options'`, que casava os botões de opção de cada conversa da
 *Da próxima vez:* ao escrever seletor de UI para uma AÇÃO DESTRUTIVA, contar quantos elementos
 ele casa (`.count()`) na UI real — não confiar que "provavelmente é o certo". Um seletor
 destrutivo ambíguo é pior que nenhum.
+
+**Um guard que lê estado da UI pode estar certíssimo na lógica e ler cedo demais.** O guard
+009 (modo de raciocínio) tinha regex correto e caso positivo coberto por unit — mas ao vivo
+NÃO disparava: o chip de modo do composer só hidrata ~3s DEPOIS do input box, e o daemon lia
+logo após o input, pegando string vazia. E `""` era tratado como "modo padrão", não como "ainda
+não carregou". Resultado: com Medium/High ativo, o guard passava batido e o sintoma 009 (600s
+de silêncio) voltava — o fix de regex sozinho era cosmético. Corrigido com `settled_composer_mode`
+(poll até um token de modo conhecido aparecer). Só ficou visível porque rodei o teste ao vivo
+pelo endpoint real, não só unit.
+*Da próxima vez:* guard que lê estado assíncrono de UI precisa de um SINAL DE SETTLE (esperar
+um marcador conhecido aparecer), nunca ler-uma-vez-e-julgar; e "vazio" quase nunca é o mesmo
+que "valor padrão". Validar guard ao vivo, não só por unit — unit não vê a corrida de render.
+
+**Update de SO em hypervisor de produção: modo sem auto-restart + reboot é passo separado.** No
+stage4 (Proxmox, 138 pacotes segurança/point), `needrestart` interativo travaria o apt e/ou
+bounçaria zeecred-sftp (usuários terceiros). Rodei com `NEEDRESTART_MODE=l` (lista, não
+reinicia) + `DEBIAN_FRONTEND=noninteractive` + `--force-conf{def,old}` e dry-run antes (0
+removidos). Zero serviço bouncado; docker pegou libs novas sozinho (0 containers). Sobra: os
+processos ainda mapeiam libc antiga (`grep -c "(deleted)" /proc/PID/maps`) até restart — que é
+ação gateada, não autônoma.
+*Da próxima vez:* em host que hospeda produção, separar "instalar pacotes" (posso, em modo
+sem-restart) de "reiniciar serviços / reboot" (requer aprovação e, no caso do SFTP, janela
+combinada com terceiros).
