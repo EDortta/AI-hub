@@ -84,3 +84,45 @@ de VM — fora do que um agente pode/deve executar autonomamente (regra: sem dep
 sem aprovação). Além disso, o guard in-flight adicionado na issue 001 já mitiga o sintoma
 de curto prazo (Chrome morto durante geração), reduzindo a urgência desta migração.
 Próximo passo é seu: executar o build da VM no dom0A e depois apontar `CDP_URL` do daemon.
+
+---
+
+## Fechamento (2026-07-16) — [superseded] por WK-20260715-aihub-stage4
+
+**O problema que esta issue resolve já foi resolvido em outro host.** Em 2026-07-15 o
+chrome-daemon migrou para o **stage4** (`192.168.7.200`, VM Proxmox Debian 12, sempre
+ligada) com Chrome dedicado sob Xvfb `:99` e perfil persistente. O objetivo — tirar o
+browser do devel3, que desliga fora do horário — está atendido.
+
+Construir a VM do Chrome no dom0A agora seria **um segundo browser dedicado**, para o
+mesmo fim, num host pior. Ponto a ponto, o dom0A perde:
+
+- **Energia**: dom0A desliga fora de 07:00–18:00 → precisaria de WoL e ~98s de cold boot
+  (medido nesta issue) antes de qualquer geração. O stage4 é sempre-ligado: 0s.
+- **RAM**: o inventário desta issue mede **~4.3G livres** com 6 VMs de banco rodando, e
+  conclui "RAM é o gargalo" — daí a VM sem autostart. O Chrome pagaria 3G desse orçamento.
+- **Disco**: nenhum SSD no dom0A (todos HDD 7200rpm). Chrome em HDD compartilhado com 6 VMs
+  de banco não é um bom vizinho para ninguém.
+- **Complexidade**: exigia migração de rede (LAN 71), bridge, `ensure_vm_ready()` com
+  polling de WoL, e uma janela de shutdown acordada. Nada disso existe no stage4.
+
+O trabalho de medição desta issue **não foi desperdiçado**: o cold boot de ~98s, o
+inventário de RAM/disco do dom0A e a constatação de que `virsh managedsave` existe
+continuam válidos e ficam registrados aqui para quem precisar provisionar qualquer VM
+no dom0A. É a razão de esta issue ser fechada com o conteúdo preservado, não apagada.
+
+**Correção de uma afirmação desta issue**, para não induzir erro em quem ler depois:
+
+> "A 001 (watchdog matando Chrome in-flight) vira **não-aplicável** neste deployment
+> (o Chrome remoto não é gerenciado pelo watchdog local)."
+
+Verdade para o desenho da 005 (daemon e Chrome em hosts diferentes). **Falso no stage4**,
+onde daemon e Chrome coabitam a VM e o watchdog é local ao Chrome. A 001 continua
+aplicável e teve sua causa-raiz corrigida em 2026-07-16 (reaper matava renderer filho do
+Chrome gerenciado — a proteção cobria só o PID pai).
+
+**Pontos em aberto** listados acima (ordem do build, horário de WoL, medição de CDP,
+segurança do CDP) ficam sem objeto: não há build. Segurança do CDP, aliás, foi resolvida
+melhor no stage4 — loopback + túnel SSH sob demanda, em vez de CDP exposto na LAN.
+
+Nada a fazer. Fechada. Ver `handoff.md` → "Topologia atual".

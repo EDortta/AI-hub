@@ -1,9 +1,81 @@
 # Handoff — chrome-daemon
 
-## Topologia atual (desde 2026-07-15, WK-20260715-aihub-stage4)
+## Sessão 2026-07-16 (WK-20260716-ai-issues-sweep) — issues 001/002/003/007-p1
 
-O chrome-daemon **roda no stage4** (`root@192.168.7.200`, VM Proxmox Debian 12),
-não mais no devel3.
+Varredura das issues abertas: implementar, criticar, corrigir. **Nada foi implantado** —
+o daemon no stage4 continua rodando o código anterior. Deploy é passo seu.
+
+- **Suíte de testes criada do zero** (o repo não tinha nenhuma): `chrome-daemon/tests/`,
+  `pytest.ini` na raiz. `cd ~/Sync/Projects/AI/hub && python3 -m pytest` → **42 testes**.
+- **001** — causa-raiz corrigida, não o sintoma: `_kill_stale_chrome` poupava só o PID pai;
+  quem o log da issue mostra morrendo é um **renderer filho**. `_managed_chrome_pids()`
+  agora protege a árvore. Guard movido para **dentro** do reaper. `/conversations/*/send`
+  (nomeado na issue, nunca marcado) e mais 3 endpoints agora usam `chrome_op_guard()`.
+- **002** — detecção de perda de contexto extraída para `is_chatgpt_home()`, pura e testada.
+- **003** — revisada; guard consistente. Seletores continuam não testáveis fora do browser.
+- **007 parte 1** — registry **persistido**: `WatcherStore`/`NullWatcherStore`/
+  `JsonFileWatcherStore` (`~/.local/share/ai-hub/watchers.json`, atômico, chmod 600).
+  `restore()` no boot, `checkpoint()` a cada 30s. `seen_hashes` persiste; **inbox não**.
+- **004 e 005** → `[superseded]`: queriam browser em VM dedicada sempre-ligada — o stage4
+  já entregou isso em 2026-07-15.
+- **007 parte 2** (empacotar CLI com pipx) — **adiada por decisão sua**: exige renomear
+  módulos e reescrever o install.sh num daemon em produção que não posso testar e2e.
+
+### Próximo passo (DO THIS FIRST)
+Nada é urgente. Quando quiser fechar 001/002/003 como `[finished]`, o que falta é **e2e com
+sessão ChatGPT viva no stage4** — uma geração de 2-4 min que sobreviva sem o 500, e os
+seletores do delete. Ao implantar, note que o `watchers.json` **muda comportamento no boot**:
+watchers registrados voltam depois do restart (era o bug 007; agora é a feature).
+
+
+## Topologia atual (desde 2026-07-16, WK-20260716-hub-para-ct-4001)
+
+O chrome-daemon **roda no CT 4001 `ai-ecosystem`** do stage4 — **não** na baremetal.
+
+- **stage4 é o HOST Proxmox** (`/etc/pve` presente), `192.168.7.200`. A frase anterior aqui
+  ("VM Proxmox Debian 12") **estava errada** e induziu a desenhar em cima de ficção: não há
+  VM; o daemon estava direto no hypervisor.
+- **CT 4001**: Debian 12, `unprivileged: 1`, `features: nesting=1`, 3G/2 cores, **rede
+  interna `vmbr2` `192.168.1.5`** — fora da LAN.
+- **Chrome com sandbox completo** dentro do CT unprivileged (userns/pidns/netns do renderer
+  isolados, chroot, seccomp 2). **Nunca** `--no-sandbox`.
+- **API**: `0.0.0.0:9400` **dentro do CT** (`AIHUB_BIND_HOST`), exposta só pelo **nginx do
+  host** em `:9480` (`proxy_pass http://192.168.1.5:9400`, `Host: localhost`). Porta única.
+- **CDP** `127.0.0.1:9222` **do CT** — inalcançável do hypervisor e da LAN.
+- **Acesso**: `ssh ai-ecosystem` (ProxyJump por `stage4-inovacao`) ou `pct enter 4001`.
+- **Guardian** roda no host (precisa do `pct`); **process_monitor** roda dentro do CT.
+- **Rollback**: perfil e checkout do `ai-hub` intactos no host; unit apenas `disable`.
+
+> **Sessão ChatGPT VIVA** (login do operador, 2026-07-17): `logged_in: true`.
+> Provado do devel3: `AiHubDriver.health()` → UP e `status()` → `logged_in=True`, pelo caminho
+> Gateway → nginx(:9480) → CT(192.168.1.5:9400) → Chrome(:99) → ChatGPT.
+
+**Host limpo**: perfil de 3.4G removido, `google-chrome` purgado do hypervisor. Ficou de
+propósito `/home/ai-hub/.config/ai-hub/daemon.env` — **o guardian roda no host e lê o token
+dali**; apagá-lo faria ele tomar 401 e reiniciar um daemon são (armadilha do DIAG-20260707).
+
+### Mexer no browser na mão (re-login 2FA, trocar modelo do GPT, aceitar diálogo)
+
+```bash
+scripts/aihub-vnc.sh            # abre a tela; feche a janela p/ encerrar tudo
+scripts/aihub-vnc.sh --check    # só verifica se dá para abrir
+scripts/aihub-vnc.sh --kill     # mata x11vnc órfão no CT
+```
+
+Roda do devel3. Sobe um x11vnc **temporário** no CT, abre o túnel, chama o visualizador e
+**derruba tudo ao sair** — o x11vnc é `-nopw`, quem alcança a porta dirige o browser logado,
+então ele nasce e morre com o script. Encapsula três pegadinhas que custaram caro:
+`su - ai-hub` (rodar como root dá `BadAccess` no `X_ShmAttach` — o Xvfb é do ai-hub),
+`-noshm` (MIT-SHM não funciona aqui) e `ssh -f` em vez de `&` (o túnel tem 2 saltos e `&`
+segue antes de autenticar).
+
+### Pilotar o Chrome por CDP (Playwright do devel3)
+```bash
+~/scripts/aihub-cdp-tunnel.sh   # repontado p/ o CT em 2026-07-17
+```
+
+### Histórico: 2026-07-15 (WK-20260715-aihub-stage4)
+O daemon migrou do devel3 para o stage4 — mas para a **baremetal** do hypervisor.
 
 - **Host:** stage4. Usuário dedicado **`ai-hub`** (systemd user service + linger).
   Nunca root (SEC-0107: Chrome sem `--no-sandbox`).
