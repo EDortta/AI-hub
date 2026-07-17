@@ -65,6 +65,12 @@ def test_lookalike_host_is_not_home():
     "Ask ChatGPT\nThinking",     # innerText do form inteiro, como lido em produção
     "Reasoning",
     "Raciocínio",
+    # GPT-5.5/5.6 (medido ao vivo 2026-07-17): a UI removeu o rótulo "Thinking" e
+    # nomeia o esforço de raciocínio como níveis no seletor do composer.
+    "Medium",
+    "High",
+    "Ask ChatGPT\nMedium",       # innerText do form com a pill "Medium"
+    "Ask ChatGPT\nHigh",
 ])
 def test_reasoning_modes_are_detected(label):
     from image_generator import is_reasoning_mode
@@ -77,6 +83,8 @@ def test_reasoning_modes_are_detected(label):
     "Ask ChatGPT",
     "GPT-5",
     "Auto",
+    "Instant",           # nível padrão do GPT-5.5/5.6 = SEM raciocínio (verificado ao vivo)
+    "Ask ChatGPT\nInstant",
 ])
 def test_default_model_is_not_flagged(label):
     """Um falso positivo aqui bloqueia TODA geração — pior que o bug original."""
@@ -85,10 +93,17 @@ def test_default_model_is_not_flagged(label):
 
 
 def test_word_boundary_avoids_false_positives():
-    """'rethinking' contém 'thinking' mas não é um modo — a checagem é por palavra."""
+    """'rethinking' contém 'thinking' mas não é um modo — a checagem é por palavra.
+
+    'medium'/'high' são palavras comuns; a pill do composer só mostra a palavra do
+    modo e a leitura ocorre com o composer vazio (antes de _fill_and_send), então o
+    prompt do usuário nunca é lido aqui — mas a checagem continua sendo por palavra.
+    """
     from image_generator import is_reasoning_mode
     assert is_reasoning_mode("rethinking the design") is False
     assert is_reasoning_mode("unthinking") is False
+    assert is_reasoning_mode("highlight the logo") is False   # 'high' colado em 'light'
+    assert is_reasoning_mode("premium medium-rare") is True   # 'medium' isolado casa
 
 
 def test_unreadable_composer_fails_open(monkeypatch):

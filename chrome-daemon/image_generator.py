@@ -24,7 +24,15 @@ _CHATGPT_HOME_BASES = ("https://chatgpt.com", "https://chat.openai.com")
 # Modos de raciocínio do ChatGPT. Um GPT de imagem sob um destes NÃO aciona a
 # ferramenta de imagem: fica "Thinking" indefinidamente e a geração nunca vem
 # (issue 009 — medido: 11 min sem imagem com Thinking; 30s com o modelo padrão).
-_REASONING_MODE_RE = re.compile(r"\b(thinking|reasoning|raciocínio|racioc[ií]nio)\b", re.IGNORECASE)
+#
+# A partir do GPT-5.5/5.6 a UI removeu o rótulo "Thinking" e passou a nomear o
+# esforço de raciocínio como níveis no mesmo seletor do composer: Instant (padrão,
+# sem raciocínio) vs "Medium"/"High" (raciocínio). Só a palavra do modo aparece na
+# pill do composer, então casar "medium"/"high" ali não pega texto colateral.
+# "Instant" é a única que NÃO é raciocínio e por isso fica de fora da regex.
+_REASONING_MODE_RE = re.compile(
+    r"\b(thinking|reasoning|raciocínio|racioc[ií]nio|medium|high)\b", re.IGNORECASE
+)
 
 
 def is_reasoning_mode(label: str | None) -> bool:
