@@ -19,7 +19,12 @@ Geração real via `POST /image/generate` no GPT `g-pmuQfob8d-image-generator`, 
 11:21:47  iter=23 page_url=.../g-pmuQfob8d-image-generator/c/6a5a0ede-...  img_count=4
 ```
 
-`img_count` **parado em 4** por >10 minutos. Nenhuma imagem nova.
+`img_count` **parado em 4** por >10 minutos. Nenhuma imagem nova. Desfecho após ~11min:
+
+```json
+{"detail":"Nenhuma imagem nova apareceu dentro do tempo limite."}
+```
+(início 08:14:56 · fim 08:26:18 — o `_wait_for_new_image` esgotou os 600s)
 
 ## O que NÃO é (importante — três issues foram descartadas por medição)
 
