@@ -273,7 +273,8 @@ Aprovado por "faz tudo" (operador, 2026-07-16). Feito e verificado:
 | nginx do host repontado | ✅ `proxy_pass http://192.168.1.5:9400` + `Host: localhost`; `nginx -t` OK, **reload** (não restart) |
 | Host limpo | ✅ daemon `disable --now`; **zero** Chrome/Xvfb/CDP fora de CT |
 | Guardian + process_monitor | ✅ repontados para o CT |
-| **Login no ChatGPT** | ❌ **SEU** — 2FA, ver abaixo |
+| **Login no ChatGPT** | ✅ **feito pelo operador** (2026-07-17) — `logged_in: true` |
+| Limpeza do host | ✅ perfil de 3.4G removido; `google-chrome` purgado do hypervisor |
 
 ### Verificação final
 
@@ -288,28 +289,54 @@ CDP :9222 no host           → 0
 Infra intocada: /enviar-arquivo/ 200 · 4 CTs running · portas expostas: 22 80 3128 5055 8006 9480
 ```
 
-### O que falta: o login (2FA — só você faz)
+### CONCLUÍDA (2026-07-17) — login feito, caminho provado, host limpo
 
-**A sessão do ChatGPT não sobreviveu à cópia do perfil** — a lição do napkin vale mesmo para
-container na mesma caixa (`logged_in: false` no CT).
+O operador logou no ChatGPT via VNC no CT. Prova de ponta a ponta, pelo caminho inteiro:
 
-**Mas ela já estava morta no host antes de eu encostar em nada**: o daemon do host, religado
-para conferir, também reportou `chatgpt_logged_in: false`. O hub estava sem conseguir fazer o
-trabalho dele há algum tempo. O re-login **não é custo desta migração** — é dívida que já
-existia, e agora um login só resolve as duas coisas.
-
-```bash
-# no CT, expor o :99 por VNC (só loopback):
-ssh ai-ecosystem 'x11vnc -display :99 -localhost -nopw -forever &'
-# do devel3, tunelar e abrir o cliente VNC em localhost:5900:
-ssh -L 5900:127.0.0.1:5900 ai-ecosystem
-# depois:  curl -H "Authorization: Bearer <token>" http://192.168.7.200:9480/session/check
 ```
+Gateway (devel3, config INALTERADA) → nginx (host :9480) → CT (192.168.1.5:9400) → Chrome (:99) → ChatGPT
+  health()  → ('UP', None)
+  status()  → logged_in=True | cdp=True | display=:99
+```
+
+O `status()` usado é o **método novo da issue 002 fase A** (Gateway), validado aqui contra o
+daemon real pela primeira vez.
+
+**A receita de VNC que eu tinha escrito estava errada e queimou o operador.** Duas falhas:
+
+1. faltava `-noshm` — o x11vnc tenta MIT-SHM por padrão e toma `BadAccess` neste ambiente;
+2. **`ssh ai-ecosystem` loga como `root`, mas o Xvfb roda como `ai-hub`** — um processo não
+   anexa a memória compartilhada do X server de outro usuário. Erro:
+   `X Error ... BadAccess ... X_ShmAttach`. Eu escrevi a receita sem ligar que a própria
+   entrada de ssh que criei entra como root.
+
+Receita correta: `su - ai-hub -c "x11vnc -display :99 -localhost -nopw -noshm -forever &"`,
+depois `ssh -L 5900:127.0.0.1:5900 ai-ecosystem`. **x11vnc morto após o login** (é `-nopw`).
+
+### Limpeza do host (item 6) — feita
+
+- `chrome-profile` de **3.4G removido** do hypervisor (a sessão dele estava morta; a viva
+  está no CT). Eram cookies do ChatGPT em repouso na caixa da infra — o ativo que esta issue
+  existe para tirar de lá.
+- **`google-chrome-stable` purgado** do host. Nada dependia dele (`apt-cache rdepends` vazio;
+  nenhum cron/unit referenciando). Binário parado ainda é ferramenta disponível para quem
+  conseguir execução no hypervisor.
+- Disco do host: **36G → 32G usados**.
+
+**O que ficou de propósito**: `/home/ai-hub/.config/ai-hub/daemon.env` (600). O **guardian
+roda no host e lê o token dali** — apagar `/home/ai-hub` inteiro faria ele tomar 401, concluir
+que o daemon caiu e **reiniciar um daemon são**: exatamente a armadilha
+`DIAG-20260707-daemon-token-ausente-503`. Verificado depois da limpeza: guardian exit 0, sem
+restart. O checkout de 2M em `/home/ai-hub/Sync` também ficou (inerte; o cron agora aponta
+para o CT).
+
+### Rollback (não existe mais, e está certo)
 
 ### Rollback (intacto até você mandar apagar)
 
-O perfil e o checkout do `ai-hub` **continuam no host**, e a unit está apenas
-`disable`, não removida. Reverter:
+O perfil do host **foi removido** (item 6). Reverter para o host exigiria re-login lá — o
+que não é rollback, é refazer. O CT é agora a única casa do hub, e está provado. A unit do
+host continua `disable` (não removida) e o checkout inerte, mas isso é resíduo, não plano B:
 
 ```bash
 systemctl --user -M ai-hub@ enable --now chrome-daemon.service
