@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import logging
+import re
 import time
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +20,39 @@ _GENERATED_IMG_MIN_PX = 300
 
 
 _CHATGPT_HOME_BASES = ("https://chatgpt.com", "https://chat.openai.com")
+
+# Modos de raciocínio do ChatGPT. Um GPT de imagem sob um destes NÃO aciona a
+# ferramenta de imagem: fica "Thinking" indefinidamente e a geração nunca vem
+# (issue 009 — medido: 11 min sem imagem com Thinking; 30s com o modelo padrão).
+_REASONING_MODE_RE = re.compile(r"\b(thinking|reasoning|raciocínio|racioc[ií]nio)\b", re.IGNORECASE)
+
+
+def is_reasoning_mode(label: str | None) -> bool:
+    """True quando o rótulo do composer nomeia um modo de raciocínio.
+
+    O ChatGPT só renderiza o chip de modo no composer quando um modo NÃO-padrão
+    está escolhido — com o modelo default o composer não tem rótulo nenhum. Então
+    "sem rótulo" significa "padrão", que é o que queremos, e não "não consegui ler".
+    """
+    return bool(label and _REASONING_MODE_RE.search(label))
+
+
+def _composer_mode_label(page) -> str | None:
+    """Rótulo do modo no composer, ou None. Best-effort: nunca levanta.
+
+    Falha ABERTA de propósito: se a UI mudar e não dermos conta de ler, a geração
+    segue. Isto é um diagnóstico (transforma 600s de silêncio num erro nomeado em
+    2s), não um controle de segurança — bloquear por não conseguir ler seria
+    trocar um problema raro por um permanente.
+    """
+    try:
+        txt = page.evaluate(
+            "() => { const f = document.querySelector('form'); return f ? (f.innerText || '').trim() : ''; }"
+        )
+        return txt or None
+    except Exception as exc:  # noqa: BLE001 - diagnóstico nunca derruba a geração
+        log.debug("could not read composer mode label: %s", exc)
+        return None
 
 
 def is_chatgpt_home(url: str) -> bool:
@@ -50,12 +84,20 @@ def _estuary_srcs(page) -> set[str]:
     return result
 
 
-def _click_first_available(page, selectors: tuple, timeout_ms: int = 10_000) -> bool:
+def _click_first_available(page, selectors: tuple, timeout_ms: int = 10_000,
+                           force: bool = False) -> bool:
+    """Clica no primeiro seletor que resolver. `force` pula a checagem de acionabilidade.
+
+    `force=True` é necessário quando um filho SVG (`<use>`) responde pelo
+    elementFromPoint do botão — o Playwright dá timeout achando que algo cobre o
+    alvo. Use só onde isso foi medido; `force` também esconde botão realmente
+    coberto, que é bug de verdade.
+    """
     for sel in selectors:
         try:
             loc = page.locator(sel).last
             loc.wait_for(state="visible", timeout=timeout_ms)
-            loc.click()
+            loc.click(force=force)
             return True
         except Exception:
             continue
@@ -337,32 +379,46 @@ def delete_current_chat(page) -> bool:
     log and return False WITHOUT raising, so a delete never sinks a successful
     generation (issue 003).
     """
-    menu_selectors = (
-        "button[data-testid='conversation-options-button']",
-        "button[aria-label*='options' i]",
-        "button[aria-label*='opções' i]",
-        "[data-testid='conversation-turn'] button[aria-label*='More' i]",
-        "button[aria-label*='More' i]",
-    )
+    # UM seletor, não uma lista de "fallbacks". Verificado na UI real (2026-07-17):
+    # este testid identifica o menu DESTA conversa, no header.
+    #
+    # [!] NÃO reintroduzir `button[aria-label*='options' i]` como fallback: ele casa
+    # **38 elementos** — os botões de opções de CADA conversa da barra lateral
+    # (`history-item-N-options`). Com `.last`, o código clicava no menu de uma
+    # conversa QUALQUER do histórico e, se tivesse achado o Delete lá, teria
+    # apagado a conversa errada. Um fallback que casa 38 elementos não é um
+    # fallback, é um sorteio — e aqui o prêmio é apagar o chat de outra pessoa.
+    menu_selectors = ("button[data-testid='conversation-options-button']",)
     delete_item_selectors = (
+        "[data-testid='delete-chat-menu-item']",          # verificado na UI real
         "[role='menuitem']:has-text('Delete')",
         "[role='menuitem']:has-text('Excluir')",
-        "[role='menuitem']:has-text('Apagar')",
-        "div[role='menuitem']:has-text('Delete')",
-        "button:has-text('Delete chat')",
     )
     confirm_selectors = (
-        "button[data-testid='delete-conversation-confirm-button']",
-        "button:has-text('Delete')",
-        "button:has-text('Excluir')",
-        "button:has-text('Confirm')",
+        "button[data-testid='delete-conversation-confirm-button']",  # verificado
         "[role='dialog'] button:has-text('Delete')",
     )
     try:
-        if not _click_first_available(page, menu_selectors, timeout_ms=5_000):
+        # Dispensa qualquer overlay/menu/tooltip aberto ANTES de clicar. Sem isto o
+        # primeiro clique **fecha** o que estiver aberto em vez de abrir o menu, e
+        # o Delete nunca aparece. Medido na UI real (2026-07-17): a sequência
+        # idêntica falha sem o Escape e funciona com ele — foi a diferença entre o
+        # daemon falhando duas vezes e o mesmo código funcionando na mão.
+        try:
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(400)
+        except Exception:
+            pass
+
+        # force=True: o botão está visível e habilitado, mas o `<use>` do SVG do
+        # ícone é quem responde ao elementFromPoint no centro dele, então a
+        # checagem de acionabilidade do Playwright dá timeout. Medido na UI real.
+        if not _click_first_available(page, menu_selectors, timeout_ms=5_000, force=True):
             log.warning("delete_current_chat: options menu not found — skipping.")
             return False
-        page.wait_for_timeout(500)
+        # O menu leva ~900ms para renderizar (medido); o wait_for de 4s abaixo
+        # cobre, este timeout só evita bater na animação de abertura.
+        page.wait_for_timeout(1_000)
         if not _click_first_available(page, delete_item_selectors, timeout_ms=4_000):
             log.warning("delete_current_chat: Delete item not found — skipping.")
             return False
@@ -423,6 +479,19 @@ def generate_image(
             except Exception:
                 continue
         log.info("GPT page loaded: %s", page.url)
+
+        # Issue 009: sob um modo de raciocínio ("Thinking"), este GPT não aciona a
+        # ferramenta de imagem — fica pensando e a geração nunca vem. Medido:
+        # 11 min sem imagem com Thinking; 30s com o modelo padrão. Falhar aqui em
+        # ~2s, com o modo no erro, em vez de esperar 600s e reportar "nenhuma
+        # imagem apareceu" — que manda quem lê procurar no lugar errado.
+        mode = _composer_mode_label(page)
+        if is_reasoning_mode(mode):
+            raise RuntimeError(
+                f"wrong_model_selected: o composer está em modo de raciocínio ({mode!r}). "
+                "Este GPT não gera imagem nesse modo — troque o modelo na UI "
+                "(scripts/aihub-vnc.sh) e repita. Ver AI-hub issue 009."
+            )
 
         before_srcs = _estuary_srcs(page)
         log.info("Existing images in page: %d", len(before_srcs))

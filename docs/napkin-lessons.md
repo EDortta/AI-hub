@@ -106,3 +106,18 @@ conferir **quem é dono do display** (`ps -o user= -C Xvfb`), não presumir.
 Chrome saíram.
 *Da próxima vez:* antes de apagar o home de um serviço migrado, `grep -rl "/home/<user>"` em
 `/etc/cron.d`, `/usr/local/sbin` e units — o que sobrou pode ser dependência de outra coisa.
+
+**Código certo falhando é sinal de estado, não de lógica — reproduza a sequência EXATA.** O
+delete do chat (003) falhava com seletores que eu tinha verificado à mão funcionando. A
+diferença: meu teste dava `Escape` antes; o daemon não, e o primeiro clique fechava o overlay
+deixado pela geração em vez de abrir o menu. Perdi dois testes achando que era seletor errado.
+*Da próxima vez:* quando o código parece certo e falha, replique a sequência do processo real
+(mesma ordem, mesmo estado inicial), não um trecho isolado num contexto limpo. O contexto
+limpo é justamente o que esconde o bug.
+
+**Um seletor que casa 38 elementos com `.last` é uma bomba, não um fallback.** O delete caía
+em `aria-label*='options'`, que casava os botões de opção de cada conversa da sidebar. Com
+`.last`, teria apagado outra conversa do operador se o item Delete fosse encontrado ali.
+*Da próxima vez:* ao escrever seletor de UI para uma AÇÃO DESTRUTIVA, contar quantos elementos
+ele casa (`.count()`) na UI real — não confiar que "provavelmente é o certo". Um seletor
+destrutivo ambíguo é pior que nenhum.

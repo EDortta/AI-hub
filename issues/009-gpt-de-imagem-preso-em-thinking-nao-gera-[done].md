@@ -116,3 +116,31 @@ start a new chat for the latest version."** O `g-pmuQfob8d` foi atualizado. O da
 navega para a URL do GPT e reusa a aba, então pode estar preso à versão antiga da conversa.
 Não é o bug desta issue, mas explica divergência futura entre "o que vejo na UI" e "o que o
 daemon obtém". Vale uma issue própria se aparecer sintoma.
+
+
+---
+
+## IMPLEMENTADO (2026-07-17) — Opção B, aprovada pelo operador
+
+`image_generator.py`: antes de enviar o prompt, lê o rótulo de modo do composer
+(`_composer_mode_label`) e, se for um modo de raciocínio (`is_reasoning_mode`), **falha em
+~2s** com `wrong_model_selected` — a mensagem já manda rodar `scripts/aihub-vnc.sh` para
+trocar o modelo. Antes: 600s de silêncio e "nenhuma imagem apareceu", que mandava quem lê
+procurar no lugar errado.
+
+**Falha aberta de propósito** (design-standards §6): se a UI mudar e não dermos conta de ler
+o rótulo, a geração segue. É diagnóstico, não controle — bloquear por não conseguir ler
+trocaria um problema raro por um permanente. O chip de modo só existe no DOM quando um modo
+não-padrão está escolhido, então "sem rótulo" = modelo padrão = o caso bom.
+
+Testes: 11 casos em `test_image_generator.py` (detecção de Thinking/Reasoning/Raciocínio;
+default não-sinalizado; fronteira de palavra — "rethinking" não é modo; composer ilegível
+falha aberto).
+
+**Validado:** o classificador e o caso negativo (default, ao vivo — o composer não tem
+rótulo). **Não validado ao vivo:** o caminho positivo (Thinking ligado disparando o erro) —
+reproduzi-lo exigiria religar o Thinking pela VNC; a decisão do operador (2026-07-17) foi
+seguir sem isso. A lógica está coberta por unit.
+
+**[draft] → [done].** Decisão do operador: ficar com a versão antiga do GPT (o daemon já
+reusa a aba, sem ação).
