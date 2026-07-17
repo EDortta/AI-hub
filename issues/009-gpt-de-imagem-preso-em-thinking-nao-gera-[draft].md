@@ -73,3 +73,46 @@ e `img_count` não mudou, é sinal de que não vem imagem — falhar com erro no
 - **Bloqueia** a validação e2e da issue **003** (delete do chat pós-geração): sem imagem, o
   fluxo não chega ao delete.
 - Bloqueia o uso real de `/image/generate` — que é uma das razões de o hub existir.
+
+
+---
+
+## CAUSA CONFIRMADA (2026-07-17) — era o modelo "Thinking"
+
+O operador abriu a tela (`scripts/aihub-vnc.sh`), **tirou o modo Thinking**, e o GPT
+**começou a gerar imediatamente**. Screenshot durante: o placeholder de renderização
+("One last tweak…" + matriz de pontos) e o botão de stop ativo — exatamente o que não
+acontecia em 11 minutos com o Thinking ligado.
+
+A hipótese estava certa: o perfil recriado no re-login de 2026-07-17 caiu no modelo de
+raciocínio como default, e esse modelo **não aciona a ferramenta de imagem** deste GPT (ou
+demora além de qualquer limite razoável). Nada de código nosso estava errado.
+
+## O que resta decidir — e é o que importa desta issue
+
+Consertar na mão resolve **hoje**. A pergunta é o que impede a recorrência, porque
+**todo re-login recria o perfil** e pode cair no mesmo default:
+
+- **Opção A — deixar como config de perfil.** O modelo é escolha da UI, persistida no
+  perfil do Chrome. Basta lembrar de conferir depois de cada re-login. *Custo:* depende de
+  memória humana — e esta issue existe porque isso falhou uma vez.
+- **Opção B — o daemon valida antes de enviar.** Ler o seletor de modelo antes do
+  `_fill_and_send`; se estiver num modelo de raciocínio, falhar rápido com erro nomeado
+  (`wrong_model_selected`) em vez de esperar 600s. Não corrige, mas **diagnostica em 2s** em
+  vez de esconder atrás de "nenhuma imagem apareceu".
+- **Opção C — o daemon fixa o modelo.** Clicar no seletor e escolher o modelo certo antes de
+  enviar. Mais robusto e mais frágil ao mesmo tempo: é mais seletor de UI do ChatGPT para
+  quebrar.
+
+**Recomendação: B.** O padrão que a issue 002 já estabeleceu neste código é *falhar rápido
+com erro nomeado em vez de poll longo e silencioso* — e o `_wait_for_new_image` é o último
+lugar que ainda espera 600s sem distinguir "gerando devagar" de "nunca vai gerar". B aplica
+a mesma lição, sem adicionar dependência de seletor de UI para *escrever* (só para ler).
+
+## Achado lateral (registrar, não agir)
+
+A tela mostra: **"New version of GPT available — Continue chatting to use the old version, or
+start a new chat for the latest version."** O `g-pmuQfob8d` foi atualizado. O daemon sempre
+navega para a URL do GPT e reusa a aba, então pode estar preso à versão antiga da conversa.
+Não é o bug desta issue, mas explica divergência futura entre "o que vejo na UI" e "o que o
+daemon obtém". Vale uma issue própria se aparecer sintoma.
