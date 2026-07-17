@@ -54,15 +54,25 @@ O chrome-daemon **roda no CT 4001 `ai-ecosystem`** do stage4 — **não** na bar
 propósito `/home/ai-hub/.config/ai-hub/daemon.env` — **o guardian roda no host e lê o token
 dali**; apagá-lo faria ele tomar 401 e reiniciar um daemon são (armadilha do DIAG-20260707).
 
-### Re-login no ChatGPT (quando a sessão cair)
+### Mexer no browser na mão (re-login 2FA, trocar modelo do GPT, aceitar diálogo)
+
 ```bash
-ssh ai-ecosystem 'su - ai-hub -c "nohup x11vnc -display :99 -localhost -nopw -noshm -forever >/tmp/x11vnc.log 2>&1 &"'
-ssh -L 5900:127.0.0.1:5900 ai-ecosystem     # cliente VNC em localhost:5900
-# depois: matar o x11vnc (é -nopw)
-ssh ai-ecosystem 'pkill x11vnc'
+scripts/aihub-vnc.sh            # abre a tela; feche a janela p/ encerrar tudo
+scripts/aihub-vnc.sh --check    # só verifica se dá para abrir
+scripts/aihub-vnc.sh --kill     # mata x11vnc órfão no CT
 ```
-**`-noshm` e `su - ai-hub` são obrigatórios**: o x11vnc precisa rodar como o dono do Xvfb, ou
-toma `BadAccess` no `X_ShmAttach`; e o MIT-SHM não funciona neste ambiente.
+
+Roda do devel3. Sobe um x11vnc **temporário** no CT, abre o túnel, chama o visualizador e
+**derruba tudo ao sair** — o x11vnc é `-nopw`, quem alcança a porta dirige o browser logado,
+então ele nasce e morre com o script. Encapsula três pegadinhas que custaram caro:
+`su - ai-hub` (rodar como root dá `BadAccess` no `X_ShmAttach` — o Xvfb é do ai-hub),
+`-noshm` (MIT-SHM não funciona aqui) e `ssh -f` em vez de `&` (o túnel tem 2 saltos e `&`
+segue antes de autenticar).
+
+### Pilotar o Chrome por CDP (Playwright do devel3)
+```bash
+~/scripts/aihub-cdp-tunnel.sh   # repontado p/ o CT em 2026-07-17
+```
 
 ### Histórico: 2026-07-15 (WK-20260715-aihub-stage4)
 O daemon migrou do devel3 para o stage4 — mas para a **baremetal** do hypervisor.
