@@ -795,6 +795,68 @@ async def publish_to_linkedin(req: PublishSocialRequest):
     return {"ok": True}
 
 
+class LinkedInFollowRequest(BaseModel):
+    url: str
+
+
+@app.post("/social/linkedin/follow")
+async def linkedin_follow(req: LinkedInFollowRequest):
+    from social_publisher import follow_page as _follow
+
+    _require_not_login_in_progress()
+    with chrome_op_guard():
+        try:
+            result = await run_playwright_async(lambda: _follow(req.url, CDP_URL), timeout=120)
+        except Exception as e:
+            log.error("linkedin_follow failed: %s", e, exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
+    return result
+
+
+class LinkedInConnectRequest(BaseModel):
+    profile_url: str
+    note: str
+
+
+@app.post("/social/linkedin/connect")
+async def linkedin_connect(req: LinkedInConnectRequest):
+    from social_publisher import connect_with_note as _connect
+
+    _require_not_login_in_progress()
+    if len(req.note) > 300:
+        raise HTTPException(status_code=400, detail="note exceeds LinkedIn's ~300-char limit")
+    with chrome_op_guard():
+        try:
+            result = await run_playwright_async(
+                lambda: _connect(req.profile_url, req.note, CDP_URL), timeout=120
+            )
+        except Exception as e:
+            log.error("linkedin_connect failed: %s", e, exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
+    return result
+
+
+class LinkedInMessageRequest(BaseModel):
+    profile_url: str
+    text: str
+
+
+@app.post("/social/linkedin/message")
+async def linkedin_message(req: LinkedInMessageRequest):
+    from social_publisher import send_message as _send
+
+    _require_not_login_in_progress()
+    with chrome_op_guard():
+        try:
+            result = await run_playwright_async(
+                lambda: _send(req.profile_url, req.text, CDP_URL), timeout=120
+            )
+        except Exception as e:
+            log.error("linkedin_message failed: %s", e, exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
