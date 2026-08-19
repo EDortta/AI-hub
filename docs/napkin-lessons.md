@@ -144,3 +144,28 @@ ação gateada, não autônoma.
 *Da próxima vez:* em host que hospeda produção, separar "instalar pacotes" (posso, em modo
 sem-restart) de "reiniciar serviços / reboot" (requer aprovação e, no caso do SFTP, janela
 combinada com terceiros).
+
+## [2026-08-19] WK-20260819-linkedin-outreach-capability — checkout -f sem checar o fetch
+
+**Um `git fetch` que falha em silêncio deixa `origin/main` mentindo sobre "atualizado".**
+`git fetch origin` na CT `ai-ecosystem` falhou (host key, depois `Permission denied
+(publickey)` — `root` nunca teve credencial no GitHub ali). O comando seguinte,
+`git checkout -f -B main origin/main`, não checou o resultado do fetch e **teve sucesso**
+usando um `origin/main` desatualizado desde 08/07 — sobrescreveu 5 arquivos do
+chrome-daemon com essa versão antiga, sem eu perceber até checar `grep` por um fix
+que devia estar lá e não estava.
+
+**Por sorte, não por design:** o conteúdo "perdido" já estava idêntico, byte a byte, no
+`development` local (confirmei depois com `diff`) — os arquivos "modificados sem commit"
+na CT nunca foram trabalho único, era só uma cópia manual pós-cutover que git nunca viu
+por falta de fetch. Se fosse trabalho real e não commitado em outro lugar, o `-f` teria
+apagado de vez.
+
+*Da próxima vez:* `git fetch` pode "ter sucesso" (exit silencioso, sem exception visível
+no meio de um comando composto) e ainda não trazer nada novo — checar a saída do fetch
+(ou comparar hash antes/depois) antes de qualquer `checkout -f`/`reset --hard` que
+dependa dele. E quando `git fetch`/`push` falha num host remoto por credencial, não
+insistir tentando contornar (host key, senha) — é sinal de que aquele host nunca teve
+acesso de escrita ao GitHub, então qualquer sync ali por `git pull` direto vai repetir o
+problema; usar `git bundle` (não depende de rede/credencial do GitHub) até alguém
+configurar uma deploy key de verdade.

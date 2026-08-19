@@ -2,8 +2,11 @@
 
 ## Sessão 2026-08-19 (WK-20260819-linkedin-outreach-capability) — issue 004 (Gateway)
 
-**Nada foi implantado.** O daemon no CT segue com o código anterior. Deploy é passo seu.
-Issue completa em
+**Implantado, aprovado pelo operador.** `development` → `main`, restart do
+`chrome-daemon.service` na CT `ai-ecosystem` (192.168.1.5), checkout de volta
+para `development`. `/status` (autenticado) confirma
+`chrome_cdp_available:true` e `/social/linkedin/{follow,connect,message}` no
+`/openapi.json`. Issue completa em
 `~/Sync/Projects/AI/Gateway/issues/004-capacidade-de-outreach-linkedin-follow-connect-message-[review].md`
 (a issue mora no repo do Gateway — é o consumidor que motivou; a implementação toca os dois).
 
@@ -30,6 +33,27 @@ são testáveis sem Chrome — mesma situação de `publish_to_x`/`publish_to_li
 melhor esforço a partir do que já existia em `publish_to_linkedin`; a UI do
 LinkedIn muda e pode exigir ajuste no primeiro uso real. Recomendo testar
 `follow` manualmente num perfil de baixo risco antes de expor via Gateway
+
+### [!] Achado de infra — `root@ai-ecosystem` sem acesso ao GitHub
+`git fetch`/`git pull` na CT falham com `Permission denied (publickey)` — não
+há chave SSH de `root` cadastrada no GitHub. O checkout em
+`/home/ai-hub/Sync/Projects/AI/hub` estava parado em `69a9207` (15/07) desde o
+cutover, com 5 arquivos do chrome-daemon "modificados sem commit" que na
+verdade eram só uma cópia manual por cima em algum momento pós-cutover — git
+nunca soube porque nunca conseguiu fetch. Sincronizei via `git bundle`
+(contorna o GitHub), então o conteúdo está correto agora, mas **o problema de
+acesso continua**: qualquer sync futuro por `git pull` direto na CT vai falhar
+do mesmo jeito até alguém configurar uma deploy key (ou chave de `root`) no
+GitHub para este repo. Até lá, sync = bundle + scp, como fiz aqui.
+
+**Quase um incidente:** na primeira tentativa eu rodei `git checkout -f -B
+main origin/main` sem checar se o `git fetch` anterior tinha de fato
+funcionado — ele falhou silenciosamente (host key), o comando usou um
+`origin/main` **desatualizado desde 8/07** e sobrescreveu os 5 arquivos com
+essa versão bem mais antiga, sem perda real (confirmei depois, byte a byte,
+que o conteúdo "perdido" já estava idêntico no `development` local), mas
+podia não ter sido o caso. Lição: depois de `git fetch`, checar o resultado
+antes de qualquer `checkout -f`/`reset --hard` que dependa dele.
 para `job-outreach`.
 
 ---
