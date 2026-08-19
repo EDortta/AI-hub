@@ -1,5 +1,39 @@
 # Handoff — chrome-daemon
 
+## Sessão 2026-08-19 (WK-20260819-linkedin-outreach-capability) — issue 004 (Gateway)
+
+**Nada foi implantado.** O daemon no CT segue com o código anterior. Deploy é passo seu.
+Issue completa em
+`~/Sync/Projects/AI/Gateway/issues/004-capacidade-de-outreach-linkedin-follow-connect-message-[review].md`
+(a issue mora no repo do Gateway — é o consumidor que motivou; a implementação toca os dois).
+
+`social_publisher.py`: três funções novas — `follow_page()`, `connect_with_note()`,
+`send_message()` — para agir num perfil específico do LinkedIn (diferente de
+`publish_to_linkedin()`, que só posta no feed). Cada uma abre sua **própria aba**
+(`mgr.context.new_page()`, não `get_or_open_page`, porque a URL muda a cada
+chamada) e fecha em `finally`, mesmo em erro — regra nova do operador,
+2026-08-19: nenhuma aba sobrevive entre chamadas neste host (3G/2 cores,
+incidente de 15+ abas travando o CT já documentado aqui). Detecta
+checkpoint/authwall na URL, iframe de captcha/arkose, texto "unusual
+activity" — para, tira screenshot em `~/.local/share/ai-hub/linkedin-actions/`,
+levanta `LinkedInChallenge` e **nunca retenta sozinha**.
+`main.py`: `POST /social/linkedin/{follow,connect,message}`, mesmo padrão de
+`/social/publish/linkedin`. `docs/INTEGRATION.md` atualizado.
+
+Testes novos: `tests/test_social_publisher_linkedin.py` (11) — challenge
+detection com page fake, `_click_first_available`, limite de 300 chars da
+nota, rejeição de sessão login/authwall. `python3 -m pytest tests/` → **82**
+(eram 71). As três funções em si dirigem uma página Playwright real e não
+são testáveis sem Chrome — mesma situação de `publish_to_x`/`publish_to_linkedin`.
+
+**Ainda não validado:** nenhuma chamada real ao LinkedIn. Seletores de UI são
+melhor esforço a partir do que já existia em `publish_to_linkedin`; a UI do
+LinkedIn muda e pode exigir ajuste no primeiro uso real. Recomendo testar
+`follow` manualmente num perfil de baixo risco antes de expor via Gateway
+para `job-outreach`.
+
+---
+
 ## Sessão 2026-07-16 (WK-20260716-ai-issues-sweep) — issues 001/002/003/007-p1
 
 Varredura das issues abertas: implementar, criticar, corrigir. **Nada foi implantado** —

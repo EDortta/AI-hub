@@ -150,6 +150,22 @@ Resposta (com `include_bytes: true`):
 `image_path` precisa existir **no host do daemon** e dentro dos diretórios
 permitidos (gere a imagem no próprio daemon antes).
 
+### Outreach no LinkedIn (follow / connect / message)
+| Método | Caminho | Corpo |
+|---|---|---|
+| POST | `/social/linkedin/follow` | `{"url": "..."}` |
+| POST | `/social/linkedin/connect` | `{"profile_url": "...", "note": "..."}` (nota até ~300 chars) |
+| POST | `/social/linkedin/message` | `{"profile_url": "...", "text": "..."}` |
+
+Cada chamada é auto-contida: abre sua própria aba, age, tira screenshot e
+**sempre fecha a aba** (mesmo em erro) — nenhuma sobrevive entre chamadas
+neste host. `follow` é idempotente (`already_following`); `connect` idem
+(`already_pending`). `message` exige conexão de 1º grau já aceita — sem o
+botão "Message" na página, falha explicitamente em vez de tentar contornar.
+Ao detectar checkpoint/captcha/"unusual activity" a chamada para, tira
+screenshot (path na resposta em erro) e **não tenta de novo** — retentativa é
+responsabilidade de quem chama, com julgamento humano no meio.
+
 ### Navegação genérica (screenshot / ações)
 | Método | Caminho | Descrição |
 |---|---|---|
