@@ -34,17 +34,21 @@ melhor esforço a partir do que já existia em `publish_to_linkedin`; a UI do
 LinkedIn muda e pode exigir ajuste no primeiro uso real. Recomendo testar
 `follow` manualmente num perfil de baixo risco antes de expor via Gateway
 
-### [!] Achado de infra — `root@ai-ecosystem` sem acesso ao GitHub
-`git fetch`/`git pull` na CT falham com `Permission denied (publickey)` — não
-há chave SSH de `root` cadastrada no GitHub. O checkout em
+### Achado de infra — `root@ai-ecosystem` sem acesso ao GitHub — corrigido
+`git fetch`/`git pull` na CT falhavam com `Permission denied (publickey)` —
+não havia chave SSH de `root` cadastrada no GitHub. O checkout em
 `/home/ai-hub/Sync/Projects/AI/hub` estava parado em `69a9207` (15/07) desde o
 cutover, com 5 arquivos do chrome-daemon "modificados sem commit" que na
 verdade eram só uma cópia manual por cima em algum momento pós-cutover — git
 nunca soube porque nunca conseguiu fetch. Sincronizei via `git bundle`
-(contorna o GitHub), então o conteúdo está correto agora, mas **o problema de
-acesso continua**: qualquer sync futuro por `git pull` direto na CT vai falhar
-do mesmo jeito até alguém configurar uma deploy key (ou chave de `root`) no
-GitHub para este repo. Até lá, sync = bundle + scp, como fiz aqui.
+(contorna o GitHub) para corrigir o conteúdo na hora.
+
+**Corrigido de vez (2026-08-19, mesma sessão):** gerei um par de chaves
+ed25519 direto na CT (`/root/.ssh/id_ed25519_github` — a chave privada nunca
+saiu de lá) e registrei a pública como **deploy key read-only** no repo
+`EDortta/AI-hub` via `gh repo deploy-key add`. `/root/.ssh/config` na CT
+aponta `github.com` pra essa chave. `git fetch origin` e `git pull` testados
+e funcionando normalmente agora — não precisa mais de bundle+scp.
 
 **Quase um incidente:** na primeira tentativa eu rodei `git checkout -f -B
 main origin/main` sem checar se o `git fetch` anterior tinha de fato
