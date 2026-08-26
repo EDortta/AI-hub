@@ -3,8 +3,10 @@
 - work_id: `WK-20260709-ai-namespace-migration`
 - date: 2026-07-09
 - tipo: **dívida técnica** (dois itens independentes, ambos expostos pela migração)
-- status: open — parte 1 resolvida (2026-07-16); parte 2 implementada em
-  `feature/007-cli-packaging` (2026-08-26, WK-20260826-007-cli-packaging)
+- status: review — parte 1 resolvida (2026-07-16); parte 2 implementada em
+  `feature/007-cli-packaging` (2026-08-26, WK-20260826-007-cli-packaging);
+  PR https://github.com/EDortta/AI-hub/pull/2 aberta contra `development`,
+  aguardando revisão do operador (merge e rollout no host são gateados)
 
 ## 1. `WatcherRegistry` é volátil
 

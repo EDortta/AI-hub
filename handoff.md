@@ -198,4 +198,15 @@ atualiza o que a API serve (o endpoint lê o arquivo em disco a cada request).
   não bug (ver docs/napkin-lessons.md).
 - **X/Twitter:** cookie presente e `/home` carrega, mas a conta pode ter desafio de
   verificação disparado no login manual (lado do X).
-- **Registry de watchers volátil:** restart zera; consumidores re-registram por alias.
+- **Registry de watchers:** persistido desde 2026-07-16 (`JsonFileWatcherStore`,
+  issue 007 parte 1); consumidores continuam resolvendo por alias por robustez.
+
+## CLI ai-hub empacotado (issue 007 parte 2 — em review, 2026-08-26)
+PR https://github.com/EDortta/AI-hub/pull/2 (`feature/007-cli-packaging` → `development`):
+`cli.py`+`client.py` viraram o pacote `ai_hub` com console_script `ai-hub` instalado via
+pipx (`chrome-daemon/pyproject.toml`); o symlink `~/.local/bin/ai-hub` → checkout morre.
+O daemon segue rodando do checkout via systemd (não foi empacotado, de propósito).
+**Rollout gateado:** no host, o pull desta mudança deixa o symlink antigo pendurado até
+rodar `install/install.sh --cli-only`; deploys futuros que mudarem `ai_hub/` precisam
+repetir `--cli-only` (pipx congela o código na venv). Concílio de 2 rodadas: 13/0/1/1
+(detalhes na issue e em docs/napkin-lessons.md).
