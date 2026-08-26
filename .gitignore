@@ -5,3 +5,7 @@ __pycache__/
 .venv/
 venv/
 *.log
+*.egg-info/
+build/
+dist/
+.hypothesis/

@@ -1,0 +1,30 @@
+# Packaging for the ai-hub CLI + Python client (hub issue 007, part 2).
+#
+# Scope: ONLY the `ai_hub` package (cli.py + client.py) is installed. The daemon
+# (main.py, watchers.py, ...) is deliberately NOT packaged — it runs from the
+# repository checkout under systemd, with its own requirements.txt. This file
+# exists so `pipx install <this dir>` produces a real `ai-hub` binary on PATH,
+# replacing the old symlink into the checkout.
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-hub"
+version = "0.1.0"
+description = "CLI and Python client for the AI-Hub chrome-daemon"
+# No readme on purpose: docs/INTEGRATION.md carries internal operational detail
+# (hosts, token handling) that must not end up in package METADATA.
+requires-python = ">=3.10"
+# CLI/client dependencies only — the daemon's fastapi/uvicorn/playwright stack
+# stays in requirements.txt and is not dragged into the pipx venv.
+dependencies = [
+    "httpx>=0.27.0",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+ai-hub = "ai_hub.cli:main"
+
+[tool.setuptools]
+packages = ["ai_hub"]

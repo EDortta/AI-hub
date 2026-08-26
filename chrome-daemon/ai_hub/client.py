@@ -4,7 +4,7 @@ Helper for project scripts to communicate with the ai-hub daemon.
 Reads .ai-hub.yml from the project root and registers conversations/image generators.
 
 Usage:
-    from client import AIHubClient
+    from ai_hub.client import AIHubClient
     client = AIHubClient()
     client.register_from_config()          # reads .ai-hub.yml
     client.generate_image(gpt_url, prompt) # returns Path

@@ -1,0 +1,8 @@
+# Keep the sdist to the ai_hub package only. The daemon's test suite imports
+# flat modules (watchers, chrome_manager) that are not packaged — shipping the
+# tests would ship a suite that cannot run — and docs/ carries internal
+# operational detail that does not belong in a distributable archive.
+prune tests
+prune docs
+prune install
+exclude *.py *.sh *.md *.txt CDP-ACCESS.md requirements.txt

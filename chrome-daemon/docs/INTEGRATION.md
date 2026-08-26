@@ -44,12 +44,12 @@ curl -s -H "Authorization: Bearer $TOKEN" "$BASE/session/check"
 ```
 
 ```python
-# Python — cliente oficial (chrome-daemon/client.py)
+# Python — cliente oficial (pacote ai_hub)
 import os
 os.environ["AI_HUB_URL"] = "http://192.168.7.200:9480"
 os.environ["AIHUB_DAEMON_TOKEN"] = "<seu-token>"
 
-from client import AIHubClient          # copie client.py para o seu projeto
+from ai_hub.client import AIHubClient   # na venv do projeto: pip install <hub>/chrome-daemon
 hub = AIHubClient()
 print(hub.status())
 print(hub.check_session())              # True/False
@@ -186,13 +186,17 @@ responsabilidade de quem chama, com julgamento humano no meio.
 O corpo de erro é `{"detail": "<código>"}`. Trate `chatgpt_session_expired`
 pedindo ao operador para refazer o login (a sessão web expira por IP/fingerprint).
 
-## Cliente Python (`client.py`)
+## Cliente Python (`ai_hub.client`)
 
-`AIHubClient` (em `chrome-daemon/client.py`) encapsula tudo. Config por env:
-`AI_HUB_URL` (default `http://127.0.0.1:9400`) e `AIHUB_DAEMON_TOKEN`.
+`AIHubClient` (em `chrome-daemon/ai_hub/client.py`) encapsula tudo. Instale o
+pacote **na venv do seu projeto** (`pip install <caminho-do-hub>/chrome-daemon`
+— só traz httpx+pyyaml) em vez de copiar o arquivo. Fora de venv, Debian 12+
+recusa com `externally-managed-environment` (PEP 668) — use a venv do projeto,
+não `--break-system-packages`. Config por env: `AI_HUB_URL` (default
+`http://127.0.0.1:9400`) e `AIHUB_DAEMON_TOKEN`.
 
 ```python
-from client import AIHubClient
+from ai_hub.client import AIHubClient
 hub = AIHubClient()
 
 # imagem, cross-host (bytes na hora):
