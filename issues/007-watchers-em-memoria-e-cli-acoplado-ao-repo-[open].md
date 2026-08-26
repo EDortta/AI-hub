@@ -3,7 +3,8 @@
 - work_id: `WK-20260709-ai-namespace-migration`
 - date: 2026-07-09
 - tipo: **dívida técnica** (dois itens independentes, ambos expostos pela migração)
-- status: draft
+- status: open — parte 1 resolvida (2026-07-16); parte 2 implementada em
+  `feature/007-cli-packaging` (2026-08-26, WK-20260826-007-cli-packaging)
 
 ## 1. `WatcherRegistry` é volátil
 
@@ -81,3 +82,41 @@ Distinção que importa: **operador rodando o CLI no host do Hub é legítimo.**
 Enquanto o pacote não existir, os endpoints operacionais (`setup`, `login-done`, `logs`, `session/*`) devem
 continuar como CLI local, **não** atrás do Gateway: expô-los daria a qualquer projeto o poder de reiniciar
 a sessão de browser de outro.
+
+### Resolução (2026-08-26) — WK-20260826-007-cli-packaging
+
+Implementada em `feature/007-cli-packaging`:
+
+- `cli.py` e `client.py` viraram o pacote **`ai_hub`** (`chrome-daemon/ai_hub/`), com
+  `chrome-daemon/pyproject.toml` declarando `[project.scripts] ai-hub = "ai_hub.cli:main"`.
+  O hack de `sys.path` do cli.py foi removido; o import agora é `from ai_hub.client import …`.
+- **Escopo deliberado**: só `ai_hub` (CLI + cliente) é empacotado. O daemon (`main.py`,
+  `watchers.py`, …) continua rodando do checkout via systemd, com `requirements.txt` próprio —
+  a venv do pipx recebe apenas `httpx` + `pyyaml`, nunca fastapi/uvicorn/playwright.
+- `install/install.sh`: exige `pipx` no início quando o CLI faz parte da execução
+  (fail-fast), remove o symlink legado `~/.local/bin/ai-hub` se existir e roda
+  `pipx install --force "$DAEMON_DIR"`. O `PATH` deixa de conhecer `~/Sync/Projects`.
+  Ganhou dois modos vindos da crítica pré-commit: `--cli-only` (só o pipx do CLI —
+  migrar/atualizar o CLI sem mexer no serviço do daemon) e `--skip-cli` (só daemon,
+  sem exigir pipx).
+- **Rollout no host real (passo obrigatório, no mesmo deploy):** o `git pull` que traz
+  esta mudança apaga `chrome-daemon/cli.py` e deixa o symlink antigo pendurado — `ai-hub`
+  fica ENOENT até rodar `install.sh --cli-only`. E como o pipx congela o código na venv,
+  todo deploy futuro que mudar `ai_hub/` precisa repetir `--cli-only`, senão CLI e daemon
+  divergem silenciosamente.
+- Os endpoints operacionais (`setup`, `login-done`, `logs`, `session/*`) **permanecem
+  CLI-local**, não atrás do Gateway — a distinção acima continua valendo; empacotar não
+  mudou a superfície exposta.
+- Docs atualizadas: `README.md` (instalação via pipx, re-instalar após mudar `ai_hub/`) e
+  `docs/INTEGRATION.md` (cliente Python importa `ai_hub.client` em vez de "copie client.py").
+
+**Validado:** suíte completa verde (87 testes, 5 novos em `tests/test_cli_packaging.py`:
+entry point do pyproject resolve para callable; import do CLI não puxa dependências do
+daemon — verificado em subprocess; `AIHubClient` importável como módulo do pacote;
+`main()` sem comando imprime help e retorna 1; pyproject empacota só `ai_hub`).
+Instalação real exercitada em venv isolada: `pip install chrome-daemon/` → `ai-hub --help`
+funciona, `ai-hub status` sem daemon falha limpo, `Requires: httpx, pyyaml`.
+
+**Não validado (gateado):** rodar `install.sh` no host real do Hub (mexe em systemd e no
+`~/.local/bin` do operador) e o restart do daemon — deploy é ação aprovada pelo operador,
+não autônoma.

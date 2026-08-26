@@ -18,9 +18,20 @@ via `.ai-hub.yml` and receive callbacks when new messages arrive in their conver
 
 ```bash
 cd chrome-daemon
-bash install/install.sh
+bash install/install.sh   # requires pipx (sudo apt install pipx)
 ai-hub setup    # opens Chrome visibly so you can log into ChatGPT
 ```
+
+The `ai-hub` CLI is installed via `pipx` as a real console_script (package
+`ai_hub` in `chrome-daemon/pyproject.toml`) — it is no longer a symlink into
+this checkout. Because of that, pulling a new version of `ai_hub/` code does
+**not** update the installed CLI: re-run `bash install/install.sh --cli-only`
+(it just re-runs `pipx install --force` on the local directory, without
+touching the daemon service). **Rollout note:** on a host that still has the
+pre-package symlink, the `git pull` that brings this change leaves `ai-hub`
+dangling until `install.sh` (or `--cli-only`) runs — do both in the same
+deploy step. `install.sh --skip-cli` updates only the daemon and does not
+require pipx.
 
 `install.sh` does **not** run `loginctl enable-linger`; run it once yourself so
 the daemon survives logout:

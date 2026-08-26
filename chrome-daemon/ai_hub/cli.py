@@ -1,5 +1,8 @@
-#!/usr/bin/env python3
 """ai-hub CLI — manage the AI-Hub daemon from any project directory.
+
+Installed as a console_script (`ai-hub`) via pipx — see chrome-daemon/pyproject.toml.
+Not directly executable as a file: run `python -m ai_hub.cli` from chrome-daemon/
+during development, or the installed `ai-hub` binary.
 
 Usage (run from inside the project dir):
     ai-hub register      # reads .ai-hub.yml and registers with daemon
@@ -15,14 +18,11 @@ Usage (run from inside the project dir):
 from __future__ import annotations
 
 import argparse
-import json
+import os
 import sys
 from pathlib import Path
 
-# Resolve daemon URL from env or default
-import os
-sys.path.insert(0, str(Path(__file__).parent))
-from client import AIHubClient, DAEMON_URL
+from ai_hub.client import AIHubClient, DAEMON_URL
 
 
 def _client() -> AIHubClient:
