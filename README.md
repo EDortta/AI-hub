@@ -31,7 +31,10 @@ touching the daemon service). **Rollout note:** on a host that still has the
 pre-package symlink, the `git pull` that brings this change leaves `ai-hub`
 dangling until `install.sh` (or `--cli-only`) runs — do both in the same
 deploy step. `install.sh --skip-cli` updates only the daemon and does not
-require pipx.
+require pipx. First-time `pipx install` needs network egress (it fetches
+setuptools for the build plus httpx/pyyaml into the venv); the script does
+**not** restart an already-running daemon — that stays a separate,
+operator-gated `systemctl --user restart chrome-daemon`.
 
 `install.sh` does **not** run `loginctl enable-linger`; run it once yourself so
 the daemon survives logout:

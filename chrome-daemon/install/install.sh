@@ -14,6 +14,10 @@ DAEMON_DIR="$(dirname "$SCRIPT_DIR")"
 SERVICE_SRC="$SCRIPT_DIR/chrome-daemon.service"
 SERVICE_DST="$HOME/.config/systemd/user/chrome-daemon.service"
 
+if [ $# -gt 1 ]; then
+    echo "Too many arguments: expected at most one of --cli-only | --skip-cli" >&2
+    exit 2
+fi
 INSTALL_DAEMON=1
 INSTALL_CLI=1
 case "${1:-}" in
@@ -66,7 +70,22 @@ if [ "$INSTALL_CLI" = 1 ]; then
         echo "    removing legacy symlink $HOME/.local/bin/ai-hub"
         rm -f "$HOME/.local/bin/ai-hub"
     fi
+    # Stale in-tree build artifacts (pip builds in-tree; .gitignore hides them)
+    # would otherwise leak removed/renamed modules into the wheel forever.
+    rm -rf "$DAEMON_DIR/build" "$DAEMON_DIR/ai_hub.egg-info"
+    # uninstall first: `pipx install --force` reuses an existing `ai-hub` venv
+    # (leftover deps/scripts from a same-named package survive); uninstall
+    # guarantees a clean slate. --force still guards pipx's name-collision quirks.
+    pipx uninstall ai-hub >/dev/null 2>&1 || true
     pipx install --force "$DAEMON_DIR"
+elif [ -L "$HOME/.local/bin/ai-hub" ] && [ ! -e "$HOME/.local/bin/ai-hub" ]; then
+    # --skip-cli on a host where the pull already deleted chrome-daemon/cli.py:
+    # the legacy symlink is dangling and every `ai-hub` call fails with ENOENT.
+    echo ""
+    echo "WARNING: ~/.local/bin/ai-hub is a dangling symlink (the CLI it pointed" >&2
+    echo "to no longer exists). Removing it. Run 'install.sh --cli-only' to" >&2
+    echo "install the packaged CLI (requires pipx)." >&2
+    rm -f "$HOME/.local/bin/ai-hub"
 fi
 
 echo ""
@@ -75,7 +94,15 @@ if [ "$INSTALL_DAEMON" = 1 ]; then
     systemctl --user status chrome-daemon.service --no-pager || true
     echo ""
 fi
-echo "Commands:"
-echo "  ai-hub status        — show daemon + watchers"
-echo "  ai-hub setup         — open Chrome for ChatGPT login"
+if command -v ai-hub >/dev/null 2>&1 || [ "$INSTALL_CLI" = 1 ]; then
+    echo "Commands:"
+    echo "  ai-hub status        — show daemon + watchers"
+    echo "  ai-hub setup         — open Chrome for ChatGPT login"
+else
+    echo "NOTE: the ai-hub CLI is not installed on this host (ran with --skip-cli)."
+    echo "      Run 'install.sh --cli-only' when pipx is available."
+fi
 echo "  journalctl --user -u chrome-daemon -f   — follow logs"
+# NOTE: this script never restarts a daemon that is already running
+# (systemctl start is a no-op then). Restarting is a separate, operator-gated
+# step: systemctl --user restart chrome-daemon

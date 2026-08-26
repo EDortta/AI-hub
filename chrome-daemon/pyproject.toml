@@ -13,7 +13,8 @@ build-backend = "setuptools.build_meta"
 name = "ai-hub"
 version = "0.1.0"
 description = "CLI and Python client for the AI-Hub chrome-daemon"
-readme = "docs/INTEGRATION.md"
+# No readme on purpose: docs/INTEGRATION.md carries internal operational detail
+# (hosts, token handling) that must not end up in package METADATA.
 requires-python = ">=3.10"
 # CLI/client dependencies only — the daemon's fastapi/uvicorn/playwright stack
 # stays in requirements.txt and is not dragged into the pipx venv.
