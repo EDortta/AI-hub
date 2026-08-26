@@ -120,3 +120,25 @@ funciona, `ai-hub status` sem daemon falha limpo, `Requires: httpx, pyyaml`.
 **Não validado (gateado):** rodar `install.sh` no host real do Hub (mexe em systemd e no
 `~/.local/bin` do operador) e o restart do daemon — deploy é ação aprovada pelo operador,
 não autônoma.
+
+**Concílio (2 rodadas, 2026-08-26) — contagens:**
+
+- **Levantados:** 13 — 7 na crítica pré-commit (3 técnica: README com comando ambíguo
+  que resolveria no PyPI, PEP 668 no comando do INTEGRATION.md, symlink pendurado entre
+  o pull e o install; 4 cética: janela de deploy sem passo leve de migração, remediação
+  de pipx impressa que falha em Debian 12, cli.py convidando execução direta quebrada,
+  drift silencioso do CLI congelado na venv) + 6 no concílio R1 (1 técnica: argumentos
+  extras ignorados; 5 cética: build/ in-tree contaminando wheels futuros, sdist com
+  testes que não rodam + IP interno no METADATA, `--skip-cli` deixando symlink pendurado
+  em silêncio, `pipx --force` reaproveitando venv homônima com sobras, egress/no-restart
+  não documentados). Segurança: zero achados nas duas rodadas.
+- **Sobreviveram após a R2:** 0 — verificador confirmou os 6 itens da R1 fechados, com
+  reprodução empírica dos triggers (wheel contaminado por build/ estale, symlink
+  pendurado, args inválidos), e nenhum achado novo introduzido pelas correções.
+- **Viraram teste:** 1 — `test_sdist_hygiene_stays_pinned` pina o achado A2 (pyproject
+  sem readme; MANIFEST.in mantendo prune de tests/docs/install). Suíte: 88.
+- **Perguntas abertas:** 1 — pré-existente, fora do escopo desta branch: o nginx `:9480`
+  documentado em `INTEGRATION.md` alcança `/session/login` e `/session/login-done` com o
+  token compartilhado; se a política "endpoint operacional = só CLI local" deve valer
+  também para o proxy nginx (não só para o Gateway), merece issue própria — decisão do
+  operador.

@@ -78,3 +78,19 @@ def test_pyproject_does_not_package_the_daemon():
     assert match, "pyproject must pin [tool.setuptools] packages explicitly"
     packages = re.findall(r'"([^"]+)"', match.group(1))
     assert packages == ["ai_hub"]
+
+
+def test_sdist_hygiene_stays_pinned():
+    """Council finding (2026-08-26, A2): the sdist once shipped the daemon's
+    test suite (unrunnable outside the checkout) and a readme that leaked
+    internal hosts into package METADATA. Pin both fixes."""
+    pyproject = PYPROJECT.read_text(encoding="utf-8")
+    assert not re.search(r"^readme\s*=", pyproject, flags=re.MULTILINE), (
+        "pyproject must not declare a readme: docs/INTEGRATION.md carries "
+        "internal operational detail that would end up in METADATA"
+    )
+    manifest = (DAEMON_DIR / "MANIFEST.in").read_text(encoding="utf-8")
+    for directory in ("tests", "docs", "install"):
+        assert f"prune {directory}" in manifest, (
+            f"MANIFEST.in must keep pruning {directory}/ from the sdist"
+        )

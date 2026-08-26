@@ -169,3 +169,26 @@ insistir tentando contornar (host key, senha) — é sinal de que aquele host nu
 acesso de escrita ao GitHub, então qualquer sync ali por `git pull` direto vai repetir o
 problema; usar `git bundle` (não depende de rede/credencial do GitHub) até alguém
 configurar uma deploy key de verdade.
+
+## [2026-08-26] WK-20260826-007-cli-packaging — pip constrói in-tree e o .gitignore esconde a contaminação
+
+**Empacotar um diretório vivo com pip/PEP 517 deixa `build/` e `*.egg-info` dentro do
+checkout — e um `build/lib` estale de ontem entra no wheel de amanhã.** Reproduzido no
+concílio da issue 007: um módulo plantado em `build/lib/ai_hub/` apareceu no wheel
+seguinte, e o `.gitignore` (adicionado justamente para não commitar o lixo) garantia que
+ninguém veria o diretório acumulando. O install.sh agora faz `rm -rf build/ ai_hub.egg-info`
+antes de todo `pipx install`. Segundo aprendizado do mesmo concílio: `pipx install --force`
+**não é clean-slate** — reaproveita a venv homônima existente (deps e scripts órfãos de
+outro pacote `ai-hub` sobrevivem); `pipx uninstall && install` é. Terceiro: `readme =` no
+pyproject vira METADATA do pacote — apontá-lo para doc operacional interna (IPs, notas de
+token) vaza topologia em qualquer índice onde o pacote um dia caia.
+
+Contagens do concílio (2 rodadas): 13 levantados / 0 sobreviveram / 1 virou teste
+(`test_sdist_hygiene_stays_pinned`) / 1 pergunta aberta (nginx :9480 expõe `/session/*`
+com token — dívida pré-existente, decisão do operador).
+
+*Da próxima vez:* ao adicionar packaging a um repo existente, tratar `build/`+`egg-info`
+como estado que precisa de limpeza explícita no fluxo de instalação, não só de gitignore;
+e testar `pipx install --force` contra uma venv suja, não só contra host virgem.
+
+---
